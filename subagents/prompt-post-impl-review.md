@@ -8,7 +8,15 @@ Context gathering:
 - Read the finalized implementation plan and finalized test plan before reviewing code.
 - Read relevant files and repository context as needed.
 - Use read-only git inspection commands if helpful.
-- Do not modify files.
+- Do not modify files under review. You may write scratch files (see "Streaming discipline" below).
+
+## Streaming discipline
+
+As you find each observation, append it to a scratch artifact (e.g. a temp markdown file at `/tmp/review-scratch-$(date +%s).md`) via Write/Edit tool calls — one tool call per observation. Each tool call resets the streaming window. If you have been producing text for more than ~90 seconds without a tool call, flush your current findings to the scratch file and continue. Only compose the final `<review_observations_json>` block at the very end, using the scratch file as your source.
+
+## Output discipline
+
+Do not narrate process. Exclude `nit`-severity observations unless they materially affect correctness. Omit optional `evidence` sub-fields (`stdout_excerpt`, `stderr_excerpt`, `traceback_excerpt`, `notes`) unless they contain actual captured output; do not fill with placeholders. One observation per distinct finding — do not split a single issue across multiple observations. Keep `summary` to one sentence.
 
 Review for:
 - Mismatches between the implementation and the finalized implementation plan

@@ -121,7 +121,7 @@ If more than one blocking question exists, ask them together. Proceed once the b
 
 ## 3) Testing strategy
 
-If the task specification already includes detailed instructions for testing, you will use it and skip to step 4.
+If the task specification already includes detailed instructions for testing, save those instructions to a temp file, bind that path as `{APPROVED_TEST_STRATEGY_PATH}`, and skip to step 4.
 
 Otherwise, dispatch a subagent to analyze the task and the codebase and propose a testing strategy.
 
@@ -130,6 +130,8 @@ Immediately before dispatch, prepare the `test-strategy` phase via the phase wra
 Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only then, kill it and retry.
 
 When the subagent returns a proposed strategy, present it to the user verbatim and ask for explicit approval or edits. Then close that completed test-strategy subagent and clear any saved handle or `session_id` for it. Do not proceed unless the user explicitly accepts it or provides changes. Silence, implied approval, or the subagent's own recommendation does not count as agreement. The strategy and any later test plan must not rely on manual QA or human validation; prefer reproducible artifacts such as browser snapshots when visual evidence is needed. Put the strongest weight on high-value automated checks that verify real user-visible behavior through the actual UI, CLI, HTTP surface, or other outputs the user consumes, rather than tests that only show the implementation is internally self-consistent. Prefer reusing or extending those checks when they already exist, and add new tests wherever the existing suite leaves meaningful gaps in coverage, fidelity, or diagnosis. If the problem statement or prior investigation already identifies automated checks that are red and must go green, the strategy and any later test plan must include them explicitly. If the user requests changes or redirects the approach, rerun the same `test-strategy` phase wrapper command immediately before redispatching. Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only then, kill it and retry. Present the revised strategy verbatim. Repeat until the user explicitly approves a strategy.
+
+Once approved, save the final approved strategy text (the latest subagent output the user accepted) to a temp file and bind that path as `{APPROVED_TEST_STRATEGY_PATH}`. Step 8 passes it to the test-plan subagent so the test-plan prompt does not need the full conversation transcript.
 
 The agreed testing strategy is used in step 7.
 
@@ -220,7 +222,7 @@ If the plan still is not judged ready after the 5th editor round: **STOP. Do NOT
 
 Now that the implementation plan has passed the plan-editor loop and is finalized, dispatch a subagent to reconcile the testing strategy against the plan and produce the concrete test plan, starting from high-value existing automated checks where they exist and adding new tests where coverage is missing.
 
-Immediately before dispatch, prepare the `test-plan` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-test-plan.md`, `--set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH}`, `--set WORKTREE_PATH={WORKTREE_PATH}`, `--transcript-placeholder FULL_CONVERSATION_VERBATIM`, and `--require-nonempty-tag conversation`.
+Immediately before dispatch, prepare the `test-plan` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-test-plan.md`, `--set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH}`, `--set WORKTREE_PATH={WORKTREE_PATH}`, `--set-file APPROVED_TEST_STRATEGY={APPROVED_TEST_STRATEGY_PATH}`, `--transcript-placeholder USER_REQUEST_TRANSCRIPT`, and `--require-nonempty-tag approved_test_strategy`.
 
 Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only then, kill it and retry.
 

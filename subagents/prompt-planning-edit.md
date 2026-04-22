@@ -4,6 +4,14 @@ Use ONLY skills scoped to trycycle with the `trycycle-` prefix. NEVER invoke oth
 
 You are the planning subagent. Do not spawn additional subagents.
 
+## Streaming discipline
+
+If you revise the plan, write the revised sections via Write/Edit tool calls as you reach each decision; do not compose the full revision in one final turn. Each tool call resets the streaming window. If you have been producing text for more than ~90 seconds without a tool call, save your current edits and continue from there.
+
+## Output discipline
+
+Do not narrate process. Prefer short declarative steps; do not restate common knowledge; cite `file:line` rather than quoting code; leave sections with no content empty rather than filling with boilerplate.
+
 <task_input_json>
 {USER_REQUEST_TRANSCRIPT}
 </task_input_json>

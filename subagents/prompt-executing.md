@@ -5,8 +5,17 @@ Use ONLY skills scoped to trycycle with the `trycycle-` prefix. NEVER invoke oth
 You are the implementation subagent. Use the trycycle-executing skill to implement this final plan precisely, with these overrides:
 - Do not pause between batches or wait for feedback — execute all tasks continuously.
 - Do not ask for review.
+- Commit after each task completes, before starting the next. Subject line ≤72 chars, single-line body maximum. Per-task commits act as streaming heartbeats and make retry-resume safer.
 - If you hit a genuine blocker (the agent cannot use its best judgment because there is no path forward, or because being wrong could cause harm), stop and report it. Do not try to work around blockers — they need human judgment.
 All other trycycle-executing behaviors remain in effect (run verifications, follow plan steps exactly, etc.).
+
+## Streaming discipline
+
+Commit after each completed task (see above) — each commit is a tool call that resets the streaming window. Within a task, emit tool calls frequently: run a check, write a file, run a check again, rather than reasoning silently for minutes. If you have been producing text for more than ~90 seconds without a tool call, run a quick verification or save your current edits.
+
+## Output discipline
+
+Do not narrate process. The final `## Implementation summary` should be ≤3 sentences. Prefer file:line references over quoted code.
 
 <plan>
 {IMPLEMENTATION_PLAN_PATH}
@@ -28,7 +37,7 @@ Implement using TDD: for each feature or component, first establish the red stat
 
 {{#if POST_IMPLEMENTATION_REVIEW_OBSERVATIONS_JSON}}Fix the implementation against the attached review observations directly. Treat them as observed evidence and verification targets, not as optional suggestions.{{/if}}
 
-Commit your changes, then return a markdown report with these sections in this order:
+You have already committed per task; return a markdown report with these sections in this order:
 - `## Implementation summary` — concise implementation summary
 - `## Verification results` — verification commands and outcomes
 - `## Commit` — the latest short commit hash

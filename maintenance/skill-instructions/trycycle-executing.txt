@@ -28,6 +28,8 @@ This skill is invoked in trycycle Step 9 ("Execute with trycycle-executing"). A 
 
 10. **Protect test quality.** The adapted skill must explicitly forbid weakening, deleting, or diluting a valid automated test just to obtain a passing result. If a test is wrong, obsolete, or lower-fidelity than a better replacement, the subagent may correct or replace it, but it must not manufacture green by making good tests less demanding.
 
+11. **Commit per task for streaming heartbeats.** The adapted skill must instruct the subagent to commit the task's changes immediately after each task is marked `completed` via TodoWrite, before starting the next. Keep commit subjects ≤72 chars, body single-line max. Per-task commits serve two purposes: they act as tool-call heartbeats that keep the model streaming alive during long task sequences, and they make retry-resume safer (a killed subagent's partial work is preserved in commits, not lost in-flight). Do not batch commits across tasks.
+
 **Critical framing requirement — binary stop/go:**
 
 The adapted skill must have exactly two modes: execute or stop for a blocker. There is no interim state — no "document concerns," no "review critically," no "questions about the plan." The subagent proceeds unless it hits a blocker it cannot work around.
