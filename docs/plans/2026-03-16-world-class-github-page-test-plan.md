@@ -27,7 +27,7 @@
 - **Harness:** GitHub Markdown rendering harness + Screenshot capture harness
 - **Preconditions:** All implementation tasks (1–4) are complete. `README.md`, `assets/trycycle-banner.png`, and `assets/social-preview.png` exist and are committed. Working directory is the worktree root.
 - **Actions:**
-  1. Render README to HTML: `gh api /markdown -f text="$(cat README.md)" -f mode=gfm -f context=danshapiro/trycycle > /tmp/trycycle-readme-rendered.html`
+  1. Render README to HTML: `gh api /markdown -f text="$(cat README.md)" -f mode=gfm -f context=christianbauer-deltaorbit/trycycle > /tmp/trycycle-readme-rendered.html`
   2. Rewrite relative asset paths to absolute `file://` URIs using the worktree's absolute path.
   3. Wrap rendered HTML in a light-mode GitHub-flavored CSS shell at `/tmp/trycycle-readme-wrapper.html`.
   4. Screenshot: `npx playwright screenshot --full-page /tmp/trycycle-readme-wrapper.html /tmp/trycycle-readme-screenshot.png`

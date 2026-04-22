@@ -1264,7 +1264,7 @@ git -C /home/user/code/trycycle/.worktrees/add-opencode-support commit -m "docs:
 In the "If you've been sent here by your human" section, after the Kimi CLI line, add:
 
 ```markdown
-- **OpenCode:** `git clone https://github.com/danshapiro/trycycle.git ~/.config/opencode/skills/trycycle`
+- **OpenCode:** `git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.config/opencode/skills/trycycle`
 ```
 
 Also note that OpenCode discovers skills at `~/.claude/skills/` too, so existing Claude Code installs are automatically available:

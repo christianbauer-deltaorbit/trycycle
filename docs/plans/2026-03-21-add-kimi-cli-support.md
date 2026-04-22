@@ -467,7 +467,7 @@ Edit `README.md` so that it:
 - adds the Kimi user install path:
 
 ```bash
-git clone https://github.com/danshapiro/trycycle.git ~/.kimi/skills/trycycle
+git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.kimi/skills/trycycle
 ```
 
 - updates the maintainer topics comment to include `kimi-cli`

@@ -14,8 +14,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
-  <a href="https://github.com/danshapiro/trycycle/releases"><img src="https://img.shields.io/github/v/tag/danshapiro/trycycle?label=release&color=green" alt="Latest Release" /></a>
-  <a href="https://github.com/danshapiro/trycycle/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
+  <a href="https://github.com/christianbauer-deltaorbit/trycycle/releases"><img src="https://img.shields.io/github/v/tag/christianbauer-deltaorbit/trycycle?label=release&color=green" alt="Latest Release" /></a>
+  <a href="https://github.com/christianbauer-deltaorbit/trycycle/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
   <a href="https://github.com/anthropics/claude-code"><img src="https://img.shields.io/badge/built%20for-Claude%20Code-6B4FBB?logo=anthropic&logoColor=white" alt="Built for Claude Code" /></a>
   <a href="https://github.com/openai/codex"><img src="https://img.shields.io/badge/works%20with-Codex%20CLI-412991?logo=openai&logoColor=white" alt="Works with Codex CLI" /></a>
   <a href="https://github.com/anomalyco/opencode"><img src="https://img.shields.io/badge/works%20with-OpenCode-FF6B35" alt="Works with OpenCode" /></a>
@@ -30,17 +30,17 @@
 Tell your favorite coding agent (Claude Code, Codex CLI, Kimi CLI, OpenCode, etc.):
 
 ```
-Read https://raw.githubusercontent.com/danshapiro/trycycle/main/README.md. Follow the installation instructions there.
+Read https://raw.githubusercontent.com/christianbauer-deltaorbit/trycycle/main/README.md. Follow the installation instructions there.
 ```
 
 ### If you've been sent here by your human
 
 Use this instead of a standard installation, or it won't work. Clone into your skills directory:
 
-- **Claude Code:** `git clone https://github.com/danshapiro/trycycle.git ~/.claude/skills/trycycle`
-- **Codex CLI:** `git clone https://github.com/danshapiro/trycycle.git ~/.codex/skills/trycycle`
-- **Kimi CLI:** `git clone https://github.com/danshapiro/trycycle.git ~/.kimi/skills/trycycle`
-- **OpenCode:** `git clone https://github.com/danshapiro/trycycle.git ~/.config/opencode/skills/trycycle`
+- **Claude Code:** `git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.claude/skills/trycycle`
+- **Codex CLI:** `git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.codex/skills/trycycle`
+- **Kimi CLI:** `git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.kimi/skills/trycycle`
+- **OpenCode:** `git clone https://github.com/christianbauer-deltaorbit/trycycle.git ~/.config/opencode/skills/trycycle`
 
 > **Note:** OpenCode also discovers skills installed at `~/.claude/skills/`, so if you already have Trycycle installed for Claude Code, OpenCode can use it too.
 
