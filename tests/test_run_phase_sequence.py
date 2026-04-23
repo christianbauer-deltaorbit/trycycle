@@ -410,6 +410,92 @@ class RunSequenceTests(unittest.TestCase):
             self.assertTrue(expected_scratch.exists())
             self.assertIn("only-ran", expected_scratch.read_text(encoding="utf-8"))
 
+    # --- executing-shape integration: load + next*N + finalize ---
+
+    def test_executing_shape_load_next_finalize_with_sentinel(self) -> None:
+        """End-to-end sanity for the executing decomposition's loop shape:
+        load writes two tasks; first next-task ticks task 1; second ticks
+        task 2 and writes the sentinel; remaining `next-task` slots are
+        skipped; finalize still runs and sees the fully-ticked checklist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workdir = tmp_path / "repo"
+            workdir.mkdir()
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            template_dir = tmp_path / "templates"
+            artifacts_dir = tmp_path / "artifacts"
+            _write_fake_claude_binary(bin_dir)
+
+            _write_step_template(
+                template_dir / "prompt-executing-load.md",
+                directives=(
+                    "FAKE_APPEND_TO: {PHASE_STATE_PATH} CONTENT: ## Tasks\n"
+                    "FAKE_APPEND_TO: {PHASE_STATE_PATH} CONTENT: - [ ] Task 1\n"
+                    "FAKE_APPEND_TO: {PHASE_STATE_PATH} CONTENT: - [ ] Task 2\n"
+                    "FAKE_REPLY: loaded\n"
+                ),
+            )
+            # The fake binary's directive language is append-only, so we
+            # approximate "tick a task" as appending a completion note plus
+            # (on the second call) the sentinel. The real `next-task`
+            # subagent edits the checklist in place; this test only exercises
+            # the orchestration shape.
+            _write_step_template(
+                template_dir / "prompt-executing-next-task.md",
+                directives=(
+                    "FAKE_APPEND_TO: {PHASE_STATE_PATH} CONTENT: next-task-ran\n"
+                    "FAKE_REPLY: next-task-done\n"
+                ),
+            )
+            _write_step_template(
+                template_dir / "prompt-executing-finalize.md",
+                directives=(
+                    "FAKE_APPEND_TO: {PHASE_STATE_PATH} CONTENT: finalize-ran\n"
+                    "FAKE_REPLY: finalize-done\n"
+                ),
+            )
+
+            # Run once with NO sentinel to prove the loop keeps going until
+            # finalize across 3 next-task slots.
+            result = self.run_phase(
+                "run-sequence",
+                "--phase",
+                "executing",
+                "--steps",
+                "load,next-task,next-task,next-task,finalize",
+                "--template-dir",
+                str(template_dir),
+                "--workdir",
+                str(workdir),
+                "--artifacts-dir",
+                str(artifacts_dir),
+                "--backend",
+                "claude",
+                "--short-circuit-on-sentinel",
+                "next-task",
+                env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "ok")
+            self.assertFalse(payload["sentinel_seen"])
+            statuses = [(s["step"], s["status"]) for s in payload["steps"]]
+            self.assertEqual(
+                statuses,
+                [
+                    ("load", "ok"),
+                    ("next-task", "ok"),
+                    ("next-task", "ok"),
+                    ("next-task", "ok"),
+                    ("finalize", "ok"),
+                ],
+            )
+            scratch = Path(payload["phase_state_path"]).read_text(encoding="utf-8")
+            self.assertEqual(scratch.count("next-task-ran"), 3)
+            self.assertIn("finalize-ran", scratch)
+
     # --- missing template path ---
 
     def test_missing_step_template_fails_cleanly(self) -> None:
