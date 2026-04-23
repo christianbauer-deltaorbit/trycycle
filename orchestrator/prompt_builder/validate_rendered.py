@@ -9,6 +9,7 @@ from pathlib import Path
 
 PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 TAG_RE_TEMPLATE = r"<{tag}>(?P<body>.*?)</{tag}>"
+SECTION_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]*")
 
 
 class ValidationError(RuntimeError):
@@ -46,6 +47,17 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Ignore placeholder-like text inside <TAG>...</TAG> when checking "
             "for unsubstituted placeholders."
+        ),
+    )
+    parser.add_argument(
+        "--require-heartbeat-section",
+        action="append",
+        default=[],
+        metavar="SECTION",
+        help=(
+            "Require the rendered prompt to contain a Markdown '## SECTION' "
+            "heading followed by non-empty body text. Used to enforce that "
+            "streaming-heartbeat guidance has not been stripped or tail-appended."
         ),
     )
     return parser.parse_args()
@@ -90,10 +102,38 @@ def validate_nonempty_tag(prompt_text: str, tag: str) -> None:
         raise ValidationError(f"rendered prompt has empty <{tag}> block")
 
 
+def validate_heartbeat_section(prompt_text: str, section: str) -> None:
+    """Require a non-empty Markdown '## <section>' block in the rendered prompt.
+
+    The section body runs from the '## <section>' heading to the next
+    top-level '##' heading or end of file. Body text is .strip()ed; any
+    whitespace-only body is treated as empty.
+    """
+    if not SECTION_NAME_RE.fullmatch(section):
+        raise ValidationError(f"invalid section name: {section!r}")
+
+    pattern = re.compile(
+        r"^##\s+"
+        + re.escape(section)
+        + r"\s*$(?P<body>.*?)(?=^##\s|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(prompt_text)
+    if not match:
+        raise ValidationError(
+            f"rendered prompt is missing required section: '## {section}'"
+        )
+    if not match.group("body").strip():
+        raise ValidationError(
+            f"rendered prompt has empty '## {section}' section"
+        )
+
+
 def validate_rendered_prompt(
     prompt_text: str,
     required_nonempty_tags: list[str] | None = None,
     ignore_tags_for_placeholders: list[str] | None = None,
+    required_heartbeat_sections: list[str] | None = None,
 ) -> None:
     placeholder_scan_text = strip_tag_bodies(
         prompt_text, ignore_tags_for_placeholders or []
@@ -101,6 +141,8 @@ def validate_rendered_prompt(
     validate_no_placeholders(placeholder_scan_text)
     for tag in required_nonempty_tags or []:
         validate_nonempty_tag(prompt_text, tag)
+    for section in required_heartbeat_sections or []:
+        validate_heartbeat_section(prompt_text, section)
 
 
 def main() -> int:
@@ -110,6 +152,7 @@ def main() -> int:
         prompt_text,
         required_nonempty_tags=args.require_nonempty_tag,
         ignore_tags_for_placeholders=args.ignore_tag_for_placeholders,
+        required_heartbeat_sections=args.require_heartbeat_section,
     )
     return 0
 
