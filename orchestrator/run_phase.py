@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 
@@ -30,6 +31,10 @@ HEAVY_PHASES_REQUIRING_HEARTBEAT = frozenset({
     "planning-edit",
 })
 HEARTBEAT_SECTION = "Streaming discipline"
+
+# Sentinel a decomposed-phase subagent can write into the shared scratch file
+# to tell run-sequence that all remaining repeatable steps can be skipped.
+SEQUENCE_DONE_SENTINEL = "[[TRYCYCLE_SEQUENCE_DONE]]"
 
 
 class PhaseError(RuntimeError):
@@ -224,35 +229,45 @@ def _command_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _command_run(args: argparse.Namespace) -> int:
-    payload = _prepare_phase(args)
-    dispatch_dir = Path(payload["artifacts_dir"]) / "dispatch"
+def _dispatch_via_runner(
+    *,
+    phase: str,
+    prompt_path: str,
+    workdir: Path,
+    dispatch_dir: Path,
+    backend: str,
+    effort: str | None = None,
+    profile: str | None = None,
+    model: str | None = None,
+    timeout_seconds: int | None = None,
+    dry_run: bool = False,
+) -> tuple[dict[str, Any], int]:
+    """Shell out to subagent_runner.py run and return (dispatch_payload, returncode)."""
     dispatch_dir.mkdir(parents=True, exist_ok=True)
-
     command = [
         sys.executable,
         str(SUBAGENT_RUNNER),
         "run",
         "--phase",
-        args.phase,
+        phase,
         "--prompt-file",
-        payload["prompt_path"],
+        prompt_path,
         "--workdir",
-        str(Path(args.workdir).resolve()),
+        str(workdir),
         "--artifacts-dir",
         str(dispatch_dir),
         "--backend",
-        args.backend,
+        backend,
     ]
-    if args.effort:
-        command.extend(["--effort", args.effort])
-    if args.profile:
-        command.extend(["--profile", args.profile])
-    if args.model:
-        command.extend(["--model", args.model])
-    if args.timeout_seconds is not None:
-        command.extend(["--timeout-seconds", str(args.timeout_seconds)])
-    if args.dry_run:
+    if effort:
+        command.extend(["--effort", effort])
+    if profile:
+        command.extend(["--profile", profile])
+    if model:
+        command.extend(["--model", model])
+    if timeout_seconds is not None:
+        command.extend(["--timeout-seconds", str(timeout_seconds)])
+    if dry_run:
         command.append("--dry-run")
 
     dispatch_result = subprocess.run(
@@ -274,7 +289,28 @@ def _command_run(args: argparse.Namespace) -> int:
         if result_path.exists():
             dispatch_payload = json.loads(result_path.read_text(encoding="utf-8"))
         else:
-            raise PhaseError(dispatch_result.stderr.strip() or "subagent runner returned no result")
+            raise PhaseError(
+                dispatch_result.stderr.strip() or "subagent runner returned no result"
+            )
+    return dispatch_payload, dispatch_result.returncode
+
+
+def _command_run(args: argparse.Namespace) -> int:
+    payload = _prepare_phase(args)
+    dispatch_dir = Path(payload["artifacts_dir"]) / "dispatch"
+
+    dispatch_payload, returncode = _dispatch_via_runner(
+        phase=args.phase,
+        prompt_path=payload["prompt_path"],
+        workdir=Path(args.workdir).resolve(),
+        dispatch_dir=dispatch_dir,
+        backend=args.backend,
+        effort=args.effort,
+        profile=args.profile,
+        model=args.model,
+        timeout_seconds=args.timeout_seconds,
+        dry_run=args.dry_run,
+    )
 
     final_payload = {
         **payload,
@@ -284,7 +320,167 @@ def _command_run(args: argparse.Namespace) -> int:
     }
     _write_json(Path(final_payload["result_path"]), final_payload)
     _emit_json(final_payload)
-    return 0 if dispatch_result.returncode == 0 else dispatch_result.returncode
+    return 0 if returncode == 0 else returncode
+
+
+def _command_run_sequence(args: argparse.Namespace) -> int:
+    """Dispatch a phase as a sequence of bounded micro-step subagent calls.
+
+    Each step renders its own template but shares one transcript (fetched once)
+    and one scratch file ({PHASE_STATE_PATH}) for inter-step state handoff.
+    A subagent can write SEQUENCE_DONE_SENTINEL into the scratch file to
+    short-circuit any remaining steps whose names are in
+    --short-circuit-on-sentinel.
+    """
+    shared_artifacts_dir = (
+        Path(args.artifacts_dir).resolve()
+        if args.artifacts_dir
+        else Path(tempfile.mkdtemp(prefix=f"trycycle-seq-{args.phase}-")).resolve()
+    )
+    shared_artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    scratch_dir = shared_artifacts_dir / "scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    phase_state_path = scratch_dir / "phase-state.md"
+    if not phase_state_path.exists():
+        phase_state_path.touch()
+
+    if args.single_shot:
+        steps: list[tuple[str, Path]] = [
+            ("single-shot", Path(args.single_shot).resolve())
+        ]
+    else:
+        if not args.steps:
+            raise PhaseError("run-sequence requires --steps or --single-shot.")
+        template_dir = Path(args.template_dir).resolve()
+        step_names = [name.strip() for name in args.steps.split(",") if name.strip()]
+        steps = []
+        for name in step_names:
+            template_path = template_dir / f"prompt-{args.phase}-{name}.md"
+            if not template_path.exists():
+                raise PhaseError(
+                    f"Micro-step template not found: {template_path}. "
+                    f"Expected prompt-<phase>-<step>.md under --template-dir."
+                )
+            steps.append((name, template_path))
+
+    short_circuit_set = set(args.short_circuit_on_sentinel or [])
+    max_deadline = args.max_sequence_seconds
+
+    # Resolve transcripts once; subsequent steps use --set-file to avoid re-lookup.
+    transcript_bindings: dict[str, str] = {}
+    if args.transcript_placeholder:
+        _, transcript_bindings = _prepare_transcripts(
+            args, shared_artifacts_dir, workdir=Path(args.workdir).resolve()
+        )
+
+    sentinel_seen = False
+    step_results: list[dict[str, Any]] = []
+    overall_status = "ok"
+    final_reply_path: str | None = None
+    sequence_started_at = time.monotonic()
+
+    for step_name, template_path in steps:
+        if sentinel_seen and step_name in short_circuit_set:
+            step_results.append(
+                {
+                    "step": step_name,
+                    "status": "skipped",
+                    "reason": "sentinel_seen",
+                }
+            )
+            continue
+
+        step_artifacts_dir = shared_artifacts_dir / "steps" / step_name
+        step_artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        step_args = argparse.Namespace(
+            phase=(
+                args.phase
+                if step_name == "single-shot"
+                else f"{args.phase}-{step_name}"
+            ),
+            template=str(template_path),
+            workdir=args.workdir,
+            artifacts_dir=str(step_artifacts_dir),
+            set=list(args.set) + [f"PHASE_STATE_PATH={phase_state_path}"],
+            set_file=list(args.set_file)
+            + [f"{name}={path}" for name, path in transcript_bindings.items()],
+            transcript_placeholder=[],
+            transcript_cli=args.transcript_cli,
+            transcript_search_root=args.transcript_search_root,
+            canary=args.canary,
+            require_nonempty_tag=list(args.require_nonempty_tag),
+            ignore_tag_for_placeholders=list(args.ignore_tag_for_placeholders),
+        )
+
+        prepare_payload = _prepare_phase(step_args)
+        dispatch_dir = Path(prepare_payload["artifacts_dir"]) / "dispatch"
+
+        dispatch_payload, returncode = _dispatch_via_runner(
+            phase=step_args.phase,
+            prompt_path=prepare_payload["prompt_path"],
+            workdir=Path(args.workdir).resolve(),
+            dispatch_dir=dispatch_dir,
+            backend=args.backend,
+            effort=args.effort,
+            profile=args.profile,
+            model=args.model,
+            timeout_seconds=args.timeout_seconds,
+            dry_run=args.dry_run,
+        )
+
+        final_reply_path = dispatch_payload.get("reply_path", final_reply_path)
+        step_status = dispatch_payload["status"]
+        step_results.append(
+            {
+                "step": step_name,
+                "status": step_status,
+                "dispatch": dispatch_payload,
+                "prompt_path": prepare_payload["prompt_path"],
+            }
+        )
+
+        if step_status != "ok":
+            overall_status = step_status
+            break
+
+        # Check sentinel after each successful step.
+        try:
+            if SEQUENCE_DONE_SENTINEL in phase_state_path.read_text(encoding="utf-8"):
+                sentinel_seen = True
+        except OSError:
+            pass
+
+        if (
+            max_deadline > 0
+            and (time.monotonic() - sequence_started_at) > max_deadline
+        ):
+            overall_status = "escalate_to_user"
+            step_results.append(
+                {
+                    "step": "_deadline",
+                    "status": "escalate_to_user",
+                    "reason": f"sequence exceeded {max_deadline}s",
+                }
+            )
+            break
+
+    final_payload = {
+        "status": overall_status,
+        "phase": args.phase,
+        "artifacts_dir": str(shared_artifacts_dir),
+        "phase_state_path": str(phase_state_path),
+        "steps": step_results,
+        "final_reply_path": final_reply_path,
+        "sentinel_seen": sentinel_seen,
+        "duration_seconds": round(time.monotonic() - sequence_started_at, 3),
+    }
+    result_path = shared_artifacts_dir / "sequence-result.json"
+    _write_json(result_path, final_payload)
+    final_payload["result_path"] = str(result_path)
+    _emit_json(final_payload)
+    return 0 if overall_status == "ok" else 1
 
 
 def _add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -395,6 +591,131 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare normally, then dry-run the fallback subagent dispatch.",
     )
     run_parser.set_defaults(func=_command_run)
+
+    run_sequence_parser = subparsers.add_parser(
+        "run-sequence",
+        help=(
+            "Dispatch a phase as a sequence of bounded micro-step subagent "
+            "calls with a shared scratch file for state handoff."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--phase",
+        required=True,
+        help="Logical trycycle phase name (e.g. planning-initial).",
+    )
+    run_sequence_parser.add_argument(
+        "--steps",
+        default="",
+        help=(
+            "Comma-separated micro-step names. Templates are resolved as "
+            "<template-dir>/prompt-<phase>-<step>.md. Ignored when "
+            "--single-shot is passed."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--template-dir",
+        default=str(Path(__file__).resolve().parent.parent / "subagents"),
+        help="Directory holding prompt-<phase>-<step>.md templates.",
+    )
+    run_sequence_parser.add_argument(
+        "--single-shot",
+        metavar="TEMPLATE_PATH",
+        help=(
+            "Escape hatch: dispatch a single prompt rendered from this "
+            "template path instead of stepping through --steps. Useful for "
+            "short tasks where decomposition overhead isn't warranted."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--short-circuit-on-sentinel",
+        action="append",
+        default=[],
+        metavar="STEP_NAME",
+        help=(
+            "When a subagent writes the sequence-done sentinel into the "
+            "scratch file, skip any remaining steps with this name. "
+            "Repeatable. Intended for variable-length phases like executing."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--max-sequence-seconds",
+        type=int,
+        default=600,
+        help=(
+            "Overall wall-clock deadline for the whole sequence. "
+            "0 disables the deadline. Default 600 (10 min)."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--workdir", required=True, help="Worktree or repo path."
+    )
+    run_sequence_parser.add_argument(
+        "--artifacts-dir",
+        help=(
+            "Shared directory for every step's artifacts plus the scratch "
+            "file. Created under /tmp if omitted."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Bind a literal placeholder value; applied to every step.",
+    )
+    run_sequence_parser.add_argument(
+        "--set-file",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Bind a placeholder from a UTF-8 file; applied to every step.",
+    )
+    run_sequence_parser.add_argument(
+        "--transcript-placeholder",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Bind the current session transcript under this placeholder. "
+            "Resolved once up-front and reused across all steps."
+        ),
+    )
+    run_sequence_parser.add_argument(
+        "--transcript-cli",
+        choices=["auto", "codex-cli", "claude-code", "kimi-cli", "opencode"],
+        default="auto",
+    )
+    run_sequence_parser.add_argument(
+        "--transcript-search-root",
+        type=Path,
+    )
+    run_sequence_parser.add_argument("--canary")
+    run_sequence_parser.add_argument(
+        "--require-nonempty-tag",
+        action="append",
+        default=[],
+        metavar="TAG",
+    )
+    run_sequence_parser.add_argument(
+        "--ignore-tag-for-placeholders",
+        action="append",
+        default=[],
+        metavar="TAG",
+    )
+    run_sequence_parser.add_argument(
+        "--backend",
+        choices=["auto", "host", "codex", "claude", "kimi", "opencode"],
+        default="auto",
+    )
+    run_sequence_parser.add_argument(
+        "--effort", choices=["low", "medium", "high", "max"]
+    )
+    run_sequence_parser.add_argument("--profile")
+    run_sequence_parser.add_argument("--model")
+    run_sequence_parser.add_argument("--timeout-seconds", type=int)
+    run_sequence_parser.add_argument("--dry-run", action="store_true")
+    run_sequence_parser.set_defaults(func=_command_run_sequence)
 
     return parser
 
