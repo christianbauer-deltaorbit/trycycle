@@ -62,6 +62,71 @@ class ValidateRenderedPromptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class IgnoredTagGreedyBodyTests(unittest.TestCase):
+    """Greedy body match: <tag>...</tag> must absorb any literal inner </tag>
+    strings that appear inside a substituted transcript, so their bodies are
+    stripped in one pass before placeholder detection runs."""
+
+    def run_validator(self, prompt_text: str, *args: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prompt_path = Path(tmpdir) / "prompt.txt"
+            prompt_path.write_text(prompt_text, encoding="utf-8")
+            return subprocess.run(
+                ["python3", str(VALIDATOR), "--prompt-file", str(prompt_path), *args],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_inner_close_tag_then_placeholder_inside_context_is_accepted(self) -> None:
+        # Transcript body contains a literal </context> (e.g. pasted docs)
+        # followed by a placeholder-like token still INSIDE the outer span.
+        # Greedy body match absorbs to the final </context>, so {FAKE_TOKEN}
+        # must not be flagged as an unsubstituted placeholder.
+        result = self.run_validator(
+            "<context>\n"
+            "pasted docs mention </context> and reference {FAKE_TOKEN}\n"
+            "</context>\n"
+            "Work in /tmp/example\n",
+            "--ignore-tag-for-placeholders",
+            "context",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_placeholder_outside_context_is_still_rejected(self) -> None:
+        # Same shape of transcript, but the placeholder now lives OUTSIDE
+        # the <context> span. Ignoring the tag must not silence that.
+        result = self.run_validator(
+            "Leading {FAKE_TOKEN} at top.\n"
+            "<context>\n"
+            "pasted docs mention </context> inside\n"
+            "</context>\n",
+            "--ignore-tag-for-placeholders",
+            "context",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAKE_TOKEN", result.stderr)
+
+    def test_two_unrelated_tags_with_nested_closes_both_stripped(self) -> None:
+        # Two different ignored tags, each with a literal nested close of
+        # its own name in its body, and placeholder-like tokens after the
+        # inner closes. Both must be stripped.
+        result = self.run_validator(
+            "<context>\n"
+            "first transcript body with </context> inside and {TOKEN_A}\n"
+            "</context>\n"
+            "middle prose with no placeholders\n"
+            "<reply>\n"
+            "assistant reply containing </reply> inside and {TOKEN_B}\n"
+            "</reply>\n",
+            "--ignore-tag-for-placeholders",
+            "context",
+            "--ignore-tag-for-placeholders",
+            "reply",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ValidateHeartbeatSectionTests(unittest.TestCase):
     """P1: rendered prompts must carry a non-empty '## Streaming discipline' section."""
 

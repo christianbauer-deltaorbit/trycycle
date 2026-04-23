@@ -8,7 +8,12 @@ from pathlib import Path
 
 
 PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
-TAG_RE_TEMPLATE = r"<{tag}>(?P<body>.*?)</{tag}>"
+# Greedy (.* not .*?) so that an outer <tag>...</tag> span absorbs any
+# literal inner </tag> strings that appear inside a substituted transcript
+# (e.g. pasted docs that reference the tag name). Assumes at most one pair
+# of each ignored tag-name per rendered prompt, which holds for every
+# current trycycle template.
+TAG_RE_TEMPLATE = r"<{tag}>(?P<body>.*)</{tag}>"
 SECTION_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]*")
 
 
