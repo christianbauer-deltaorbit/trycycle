@@ -24,12 +24,46 @@ DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 KIMI_SHARE_DIR_ENV = "KIMI_SHARE_DIR"
 DEFAULT_KIMI_SHARE_ROOT = Path.home() / ".kimi"
 CODEX_PROFILE_ENV = "TRYCYCLE_CODEX_PROFILE"
+CLAUDE_ALLOWED_TOOLS_ENV = "TRYCYCLE_CLAUDE_ALLOWED_TOOLS"
+CLAUDE_DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Bash,Grep,Glob"
 MODEL_OVERRIDE_ENV_BY_BACKEND = {
     "codex": "TRYCYCLE_CODEX_MODEL",
     "claude": "TRYCYCLE_CLAUDE_MODEL",
     "kimi": "TRYCYCLE_KIMI_MODEL",
     "opencode": "TRYCYCLE_OPENCODE_MODEL",
 }
+
+
+class _RootPermissionError(RuntimeError):
+    """Raised when claude cannot be invoked safely under root."""
+
+
+def _is_root() -> bool:
+    """Return True when running as root on POSIX; False on Windows."""
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        return False
+    return getter() == 0
+
+
+def _claude_permission_args(*, supports_allowed_tools: bool) -> list[str]:
+    """Return the CLI args controlling claude permission handling.
+
+    Non-root: ["--dangerously-skip-permissions"] (backward compatible).
+    Root with CLI support: ["--allowedTools", "<csv>"].
+    Root without CLI support: raises _RootPermissionError.
+    """
+    if not _is_root():
+        return ["--dangerously-skip-permissions"]
+    if not supports_allowed_tools:
+        raise _RootPermissionError(
+            "Cannot run as root: installed claude CLI does not accept "
+            "--allowedTools. Upgrade claude or set "
+            f"{CLAUDE_ALLOWED_TOOLS_ENV} to an explicit csv and re-run, or "
+            "run trycycle as a non-root user."
+        )
+    tools = _read_nonempty_env(CLAUDE_ALLOWED_TOOLS_ENV) or CLAUDE_DEFAULT_ALLOWED_TOOLS
+    return ["--allowedTools", tools]
 
 
 def _binary_name_candidates(binary: str) -> list[str]:
@@ -185,10 +219,13 @@ def _probe_claude(binary: str) -> dict[str, Any]:
             "reason": f"missing required help tokens: {', '.join(missing)}",
         }
 
+    supports_allowed_tools = "--allowedTools" in output or "--allowed-tools" in output
+
     return {
         "available": True,
         "binary": path,
         "supports_resume": True,
+        "supports_allowed_tools": supports_allowed_tools,
     }
 
 
@@ -739,8 +776,12 @@ def _claude_command(
     binary: str,
     effort: str | None,
     model: str | None,
+    supports_allowed_tools: bool,
 ) -> tuple[list[str], str]:
     session_id = str(uuid.uuid4())
+    permission_args = _claude_permission_args(
+        supports_allowed_tools=supports_allowed_tools,
+    )
     command = [
         binary,
         "-p",
@@ -748,7 +789,7 @@ def _claude_command(
         session_id,
         "--output-format",
         "text",
-        "--dangerously-skip-permissions",
+        *permission_args,
     ]
     if model:
         command.extend(["--model", model])
@@ -763,7 +804,11 @@ def _claude_resume_command(
     session_id: str,
     effort: str | None,
     model: str | None,
+    supports_allowed_tools: bool,
 ) -> list[str]:
+    permission_args = _claude_permission_args(
+        supports_allowed_tools=supports_allowed_tools,
+    )
     command = [
         binary,
         "-p",
@@ -771,7 +816,7 @@ def _claude_resume_command(
         session_id,
         "--output-format",
         "text",
-        "--dangerously-skip-permissions",
+        *permission_args,
     ]
     if model:
         command.extend(["--model", model])
@@ -1038,6 +1083,7 @@ def _run_backend(
     timeout_seconds: int,
     dry_run: bool,
     events_path: Path,
+    supports_allowed_tools: bool = False,
 ) -> dict[str, Any]:
     session_lookup_started_at = time.time()
     if backend == "codex":
@@ -1056,6 +1102,7 @@ def _run_backend(
             binary=binary,
             effort=effort,
             model=model,
+            supports_allowed_tools=supports_allowed_tools,
         )
         cwd = workdir
     elif backend == "kimi":
@@ -1212,6 +1259,7 @@ def _resume_backend(
     timeout_seconds: int,
     dry_run: bool,
     events_path: Path,
+    supports_allowed_tools: bool = False,
 ) -> dict[str, Any]:
     if backend == "codex":
         command = _codex_resume_command(
@@ -1229,6 +1277,7 @@ def _resume_backend(
             session_id=session_id,
             effort=effort,
             model=model,
+            supports_allowed_tools=supports_allowed_tools,
         )
         cwd = workdir
     elif backend == "kimi":
@@ -1473,21 +1522,50 @@ def _command_run(args: argparse.Namespace) -> int:
         timeout_seconds=timeout_seconds,
     )
 
-    run_result = _run_backend(
-        backend=backend,
-        binary=backend_info["binary"],
-        prompt_text=prompt_text,
-        workdir=workdir,
-        reply_path=reply_path,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        effort=args.effort,
-        model=resolved_model,
-        profile=resolved_profile,
-        timeout_seconds=timeout_seconds,
-        dry_run=args.dry_run,
-        events_path=events_path,
-    )
+    try:
+        run_result = _run_backend(
+            backend=backend,
+            binary=backend_info["binary"],
+            prompt_text=prompt_text,
+            workdir=workdir,
+            reply_path=reply_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            effort=args.effort,
+            model=resolved_model,
+            profile=resolved_profile,
+            timeout_seconds=timeout_seconds,
+            dry_run=args.dry_run,
+            events_path=events_path,
+            supports_allowed_tools=bool(
+                backend_info.get("supports_allowed_tools", False)
+            ),
+        )
+    except _RootPermissionError as exc:
+        _append_event(
+            events_path,
+            severity="ERROR",
+            event="root_permission_refused",
+            backend=backend,
+            message=str(exc),
+        )
+        payload = {
+            "status": "escalate_to_user",
+            "phase": args.phase,
+            "backend": backend,
+            "message": str(exc),
+            "artifacts_dir": str(artifacts_dir),
+            "result_path": str(result_path),
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "reply_path": str(reply_path),
+            "events_path": str(events_path),
+            "probe": probe,
+        }
+        _write_json(result_path, payload)
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 1
 
     status, message = _classify_run_result(
         backend=backend,
@@ -1664,22 +1742,53 @@ def _command_resume(args: argparse.Namespace) -> int:
         timeout_seconds=timeout_seconds,
     )
 
-    run_result = _resume_backend(
-        backend=backend,
-        binary=backend_info["binary"],
-        session_id=args.session_id,
-        prompt_text=prompt_text,
-        workdir=workdir,
-        reply_path=reply_path,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        effort=args.effort,
-        model=resolved_model,
-        profile=resolved_profile,
-        timeout_seconds=timeout_seconds,
-        dry_run=args.dry_run,
-        events_path=events_path,
-    )
+    try:
+        run_result = _resume_backend(
+            backend=backend,
+            binary=backend_info["binary"],
+            session_id=args.session_id,
+            prompt_text=prompt_text,
+            workdir=workdir,
+            reply_path=reply_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            effort=args.effort,
+            model=resolved_model,
+            profile=resolved_profile,
+            timeout_seconds=timeout_seconds,
+            dry_run=args.dry_run,
+            events_path=events_path,
+            supports_allowed_tools=bool(
+                backend_info.get("supports_allowed_tools", False)
+            ),
+        )
+    except _RootPermissionError as exc:
+        _append_event(
+            events_path,
+            severity="ERROR",
+            event="root_permission_refused",
+            backend=backend,
+            session_id=args.session_id,
+            message=str(exc),
+        )
+        payload = {
+            "status": "escalate_to_user",
+            "phase": args.phase,
+            "backend": backend,
+            "session_id": args.session_id,
+            "message": str(exc),
+            "artifacts_dir": str(artifacts_dir),
+            "result_path": str(result_path),
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "reply_path": str(reply_path),
+            "events_path": str(events_path),
+            "probe": probe,
+        }
+        _write_json(result_path, payload)
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 1
 
     status, message = _classify_run_result(
         backend=backend,
