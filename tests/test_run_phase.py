@@ -242,7 +242,8 @@ class RunPhaseTests(unittest.TestCase):
             search_root = tmp_path / "sessions"
             template_path.write_text(
                 "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
-                "Work in {WORKTREE_PATH}\n",
+                "Work in {WORKTREE_PATH}\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             write_codex_transcript(search_root, thread_id="thread-123")
@@ -287,7 +288,8 @@ class RunPhaseTests(unittest.TestCase):
             search_root = tmp_path / "projects"
             canary = "trycycle-canary-12345678"
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             write_claude_transcript(search_root, canary=canary)
@@ -327,7 +329,8 @@ class RunPhaseTests(unittest.TestCase):
             template_path = tmp_path / "template.md"
             share_root = tmp_path / "kimi-share"
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             _write_kimi_share_root(
@@ -385,7 +388,8 @@ class RunPhaseTests(unittest.TestCase):
             caller_cwd.mkdir()
             template_path = tmp_path / "template.md"
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             write_codex_transcript(search_root, thread_id="thread-relative")
@@ -574,7 +578,8 @@ class RunPhaseTests(unittest.TestCase):
             caller_cwd.mkdir()
             prompt_path.write_text("Reply exactly with TRYCYCLE-LIVE-KIMI-PREPARE\n", encoding="utf-8")
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
 
@@ -727,7 +732,8 @@ class RunPhaseTests(unittest.TestCase):
             template_path = tmp_path / "template.md"
             search_root = tmp_path / "sessions"
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             search_root.mkdir()
@@ -763,7 +769,8 @@ class RunPhaseTests(unittest.TestCase):
             db_path = search_root / "opencode.db"
             canary = "trycycle-canary-opencode-autodetect"
             template_path.write_text(
-                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n",
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "\n## Streaming discipline\n\nHeartbeat every ~90s.\n",
                 encoding="utf-8",
             )
             _write_opencode_db(
@@ -803,6 +810,43 @@ class RunPhaseTests(unittest.TestCase):
             prompt_path = Path(payload["prompt_path"])
             prompt_text = prompt_path.read_text(encoding="utf-8")
             self.assertIn("autodetected opencode reply", prompt_text)
+
+    def test_prepare_fails_for_heavy_phase_without_heartbeat_section(self) -> None:
+        """P1 wiring: a heavy phase with a template missing '## Streaming discipline' must fail prepare."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            workdir = tmp_path / "repo"
+            workdir.mkdir()
+            template_path = tmp_path / "template.md"
+            template_path.write_text(
+                "<task_input_json>{USER_REQUEST_TRANSCRIPT}</task_input_json>\n"
+                "Work in {WORKTREE_PATH}\n",
+                encoding="utf-8",
+            )
+            search_root = tmp_path / "sessions"
+            write_codex_transcript(search_root, thread_id="thread-no-heartbeat")
+
+            result = self.run_phase(
+                "prepare",
+                "--phase",
+                "planning-initial",
+                "--template",
+                str(template_path),
+                "--workdir",
+                str(workdir),
+                "--set",
+                f"WORKTREE_PATH={workdir}",
+                "--transcript-placeholder",
+                "USER_REQUEST_TRANSCRIPT",
+                "--transcript-cli",
+                "codex-cli",
+                "--transcript-search-root",
+                str(search_root),
+                env={"CODEX_THREAD_ID": "thread-no-heartbeat"},
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Streaming discipline", result.stderr)
 
 
 def _write_opencode_db(

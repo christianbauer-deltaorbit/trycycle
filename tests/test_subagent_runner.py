@@ -167,6 +167,7 @@ def _write_fake_claude_binary(bin_dir: Path) -> Path:
                     "--output-format\\n"
                     "--resume\\n"
                     "--session-id\\n"
+                    "--allowedTools\\n"
                 )
                 raise SystemExit(0)
 

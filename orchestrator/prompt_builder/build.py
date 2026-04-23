@@ -58,6 +58,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-heartbeat-section",
+        action="append",
+        default=[],
+        metavar="SECTION",
+        help=(
+            "Require the rendered prompt to contain a non-empty Markdown "
+            "'## SECTION' heading. Repeatable."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Write the rendered prompt to this UTF-8 file instead of stdout.",
@@ -108,6 +118,7 @@ def validate_rendered_output(prompt_text: str, args: argparse.Namespace) -> None
             prompt_text,
             required_nonempty_tags=args.require_nonempty_tag,
             ignore_tags_for_placeholders=args.ignore_tag_for_placeholders,
+            required_heartbeat_sections=args.require_heartbeat_section,
         )
     except ValidationError as exc:
         raise TemplateError(str(exc)) from exc

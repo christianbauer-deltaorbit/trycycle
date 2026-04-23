@@ -18,6 +18,19 @@ PROMPT_BUILDER = SCRIPT_DIR / "prompt_builder" / "build.py"
 TRANSCRIPT_BUILDER = SCRIPT_DIR / "user-request-transcript" / "build.py"
 SUBAGENT_RUNNER = SCRIPT_DIR / "subagent_runner.py"
 
+# Phases that received a "## Streaming discipline" block in 9bb41ce.
+# Rendered prompts for these phases must carry that section to keep the
+# per-turn streaming-heartbeat rule enforceable.
+HEAVY_PHASES_REQUIRING_HEARTBEAT = frozenset({
+    "test-strategy",
+    "test-plan",
+    "executing",
+    "post-implementation-review",
+    "planning-initial",
+    "planning-edit",
+})
+HEARTBEAT_SECTION = "Streaming discipline"
+
 
 class PhaseError(RuntimeError):
     pass
@@ -149,6 +162,8 @@ def _build_prompt(
         command.extend(["--require-nonempty-tag", tag])
     for tag in args.ignore_tag_for_placeholders:
         command.extend(["--ignore-tag-for-placeholders", tag])
+    if args.phase in HEAVY_PHASES_REQUIRING_HEARTBEAT:
+        command.extend(["--require-heartbeat-section", HEARTBEAT_SECTION])
     _run_command(command)
     return prompt_path
 
