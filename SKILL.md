@@ -49,6 +49,19 @@ When a step below tells you to prepare or dispatch a phase:
 
 The prompt builder still supports conditional blocks inside templates. A block guarded by `{{#if NAME}} ... {{/if}}` is included only when `NAME` is bound to a non-empty value.
 
+## Sequenced phases (run-sequence)
+
+Long phases — `planning-initial` and `executing` — have historically hit the Anthropic streaming API's per-turn idle timeout on non-trivial tasks. The fix is to split each long phase into a sequence of short micro-step subagent calls with inter-step state passed through a shared scratch file:
+
+- Dispatch the whole phase with `python3 <skill-directory>/orchestrator/run_phase.py run-sequence --phase PHASE --steps a,b,c,...`.
+- Each step's prompt template lives under `<skill-directory>/subagents/` and is named `prompt-PHASE-STEP.md`.
+- Every step sees `{PHASE_STATE_PATH}` bound to `<artifacts_dir>/scratch/phase-state.md`. Subagents read/write/extend it. The coordinator does not read its body.
+- When a subagent writes the literal string `[[TRYCYCLE_SEQUENCE_DONE]]` into the scratch file, any remaining step whose name appears in `--short-circuit-on-sentinel` is skipped. Steps not in that list (e.g. `finalize`) still run. Used by `executing` so the per-task loop can terminate when the task list is exhausted.
+- `--max-sequence-seconds` caps overall wall clock (default 600).
+- The final reply returned by the coordinator is the last executed step's reply.
+
+For short tasks where the decomposition overhead is not warranted, pass `--single-shot <template-path>` to dispatch a single subagent against an arbitrary template instead of stepping. This preserves legacy one-shot behaviour while keeping the scratch-file machinery available.
+
 ## Workspace path convention
 
 Throughout this skill, `{WORKTREE_PATH}` means the directory where implementation happens:
@@ -181,7 +194,21 @@ Only subagents read or write plan files.
 
 Spawn a fresh planning subagent for each planning round.
 
-Immediately before dispatch, prepare the `planning-initial` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-planning-initial.md`, `--set WORKTREE_PATH={WORKTREE_PATH}`, `--transcript-placeholder USER_REQUEST_TRANSCRIPT`, and `--require-nonempty-tag task_input_json`.
+Default mode (decomposed — recommended for non-trivial tasks): dispatch the `planning-initial` phase as a four-step sequence via
+
+```
+python3 <skill-directory>/orchestrator/run_phase.py run-sequence \
+    --phase planning-initial \
+    --steps survey,scaffold,detail,commit \
+    --set WORKTREE_PATH={WORKTREE_PATH} \
+    --transcript-placeholder USER_REQUEST_TRANSCRIPT \
+    --require-nonempty-tag task_input_json \
+    <native-or-fallback args>
+```
+
+Each step has its own template under the `subagents/` directory: `<skill-directory>/subagents/prompt-planning-initial-survey.md`, `<skill-directory>/subagents/prompt-planning-initial-scaffold.md`, `<skill-directory>/subagents/prompt-planning-initial-detail.md`, and `<skill-directory>/subagents/prompt-planning-initial-commit.md`. Each step carries a soft budget of 60–180 seconds. The final reply carries the `## Plan verdict / ## Plan path / ## Commit / ## Changed files` report this skill expects.
+
+Single-shot mode (for very short tasks where the decomposition overhead is not warranted): add `--single-shot <skill-directory>/subagents/prompt-planning-initial.md` to the `run-sequence` call. That dispatches the legacy single prompt and still enforces the heartbeat check.
 
 Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only then, kill it and retry.
 
@@ -252,7 +279,24 @@ Spawn a fresh implementation subagent and give it the final excellent plan.
 
 The implementation subagent stays in execute mode until the plan is complete, the work has gone through red/green/refactor cycles as needed, and all required automated tests are passing for legitimate reasons. Failed checks mean keep improving the code and tests unless there is a genuine blocker. Do not accept weakened or deleted valid tests as a shortcut to green.
 
-Immediately before dispatch, prepare the `executing` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-executing.md`, `--set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH}`, `--set TEST_PLAN_PATH={TEST_PLAN_PATH}`, and `--set WORKTREE_PATH={WORKTREE_PATH}`, then dispatch the implementation subagent with the returned `prompt_path`.
+Default mode (decomposed — recommended for non-trivial tasks): dispatch the `executing` phase as a load / next-task (×N) / finalize sequence via
+
+```
+python3 <skill-directory>/orchestrator/run_phase.py run-sequence \
+    --phase executing \
+    --steps load,next-task,next-task,...,next-task,finalize \
+    --short-circuit-on-sentinel next-task \
+    --set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH} \
+    --set TEST_PLAN_PATH={TEST_PLAN_PATH} \
+    --set WORKTREE_PATH={WORKTREE_PATH} \
+    <native-or-fallback args>
+```
+
+N should be a practical upper bound (30 covers almost every realistic plan). Each `next-task` step implements one task and ticks the checklist; once all tasks are done the subagent writes the sentinel and remaining `next-task` slots are skipped. `finalize` still runs and emits the legacy `## Implementation summary / ## Verification results / ## Commit / ## Changed files` report.
+
+Single-shot mode (for very short plans where decomposition overhead is not warranted): add `--single-shot <skill-directory>/subagents/prompt-executing.md` to the `run-sequence` call. That dispatches the legacy single prompt.
+
+Immediately before a single-shot dispatch, prepare the `executing` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-executing.md`, `--set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH}`, `--set TEST_PLAN_PATH={TEST_PLAN_PATH}`, and `--set WORKTREE_PATH={WORKTREE_PATH}`, then dispatch the implementation subagent with the returned `prompt_path`.
 
 In fallback-runner mode, record the returned `dispatch.backend` as `{IMPLEMENTATION_BACKEND}` alongside the saved `session_id`.
 
