@@ -168,7 +168,24 @@ def _build_prompt(
     return prompt_path
 
 
+def _reject_skill_md_as_template(template: Path) -> None:
+    """Refuse to render trycycle's orchestrator documentation as a phase prompt.
+
+    SKILL.md is orchestrator prose whose '{PLACEHOLDER}' tokens are
+    documentation references, not renderable bindings. Rendering it produces
+    a generic "unsubstituted placeholders" dump that hides the real mistake.
+    """
+    if template.name == "SKILL.md":
+        raise PhaseError(
+            f"--template points at {template} (orchestrator documentation, "
+            "not a phase prompt). Use <skill-directory>/subagents/"
+            "prompt-<phase>.md instead."
+        )
+
+
 def _prepare_phase(args: argparse.Namespace) -> dict[str, Any]:
+    template = Path(args.template).resolve()
+    _reject_skill_md_as_template(template)
     workdir = Path(args.workdir).resolve()
     artifacts_dir = (
         Path(args.artifacts_dir).resolve()

@@ -811,6 +811,23 @@ class RunPhaseTests(unittest.TestCase):
             prompt_text = prompt_path.read_text(encoding="utf-8")
             self.assertIn("autodetected opencode reply", prompt_text)
 
+    def test_prepare_rejects_skill_md_as_template(self) -> None:
+        """Passing SKILL.md as --template must fail with a legible error,
+        not the generic 'unsubstituted placeholders' dump from the builder."""
+        result = self.run_phase(
+            "prepare",
+            "--phase",
+            "planning-initial",
+            "--template",
+            str(REPO_ROOT / "SKILL.md"),
+            "--workdir",
+            str(REPO_ROOT),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SKILL.md", result.stderr)
+        self.assertIn("orchestrator documentation", result.stderr)
+        self.assertNotIn("unsubstituted placeholders", result.stderr)
+
     def test_prepare_fails_for_heavy_phase_without_heartbeat_section(self) -> None:
         """P1 wiring: a heavy phase with a template missing '## Streaming discipline' must fail prepare."""
         with tempfile.TemporaryDirectory() as tmpdir:
