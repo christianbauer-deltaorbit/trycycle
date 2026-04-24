@@ -461,6 +461,73 @@ def _normalize_status(reply_text: str, exit_code: int) -> str:
     return "ok"
 
 
+# Keys preserved from claude --output-format=json into the dispatch result.
+# The claude CLI does not surface anthropic-ratelimit-* HTTP response headers
+# directly today, so this is the closest available signal: per-call usage and
+# cost. Captured into events.jsonl as a usage event and into result.json's
+# `usage_at_exit` field for postmortem analysis of stream-idle / timeout
+# failures vs. genuine rate-limiting.
+_CLAUDE_USAGE_KEYS = (
+    "usage",
+    "modelUsage",
+    "duration_ms",
+    "duration_api_ms",
+    "num_turns",
+    "stop_reason",
+    "service_tier",
+    "is_error",
+    "subtype",
+    "total_cost_usd",
+    "permission_denials",
+    "terminal_reason",
+)
+# Heuristic patterns that signal an account-level rate-limit reply from
+# claude. The CLI returns these as the literal `result` field with exit 1.
+_CLAUDE_RATE_LIMIT_PATTERNS = (
+    "You've hit your limit",
+    "you've hit your limit",
+    "rate limit",
+    "Rate limit",
+)
+
+
+def _parse_claude_json_reply(stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """Parse claude --output-format=json stdout.
+
+    Returns (reply_text, usage_metadata). On a successful JSON parse, reply_text
+    is the `result` field and usage_metadata carries the keys in
+    _CLAUDE_USAGE_KEYS. On any parse failure (e.g. fake binaries in tests, an
+    older CLI, a non-JSON failure mode), falls back to (stdout, None) so the
+    legacy text-reply contract still holds.
+    """
+    if not stdout:
+        return "", None
+    try:
+        parsed = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return stdout, None
+    if not isinstance(parsed, dict):
+        return stdout, None
+    reply = parsed.get("result")
+    if not isinstance(reply, str):
+        return stdout, None
+    metadata = {key: parsed[key] for key in _CLAUDE_USAGE_KEYS if key in parsed}
+    return reply, metadata
+
+
+def _classify_claude_failure(reply_text: str) -> str | None:
+    """Recognise account-level rate-limit replies. Returns the elevation
+    message to show as `dispatch.message`, or None if the failure does not
+    match a known pattern."""
+    if not reply_text:
+        return None
+    lowered = reply_text.lower()
+    for pat in _CLAUDE_RATE_LIMIT_PATTERNS:
+        if pat.lower() in lowered:
+            return f"claude reported rate-limiting: {reply_text.strip().splitlines()[0]}"
+    return None
+
+
 def _resolve_kimi_share_root() -> Path:
     configured = os.environ.get(KIMI_SHARE_DIR_ENV)
     if configured:
@@ -788,7 +855,7 @@ def _claude_command(
         "--session-id",
         session_id,
         "--output-format",
-        "text",
+        "json",
         *permission_args,
     ]
     if model:
@@ -815,7 +882,7 @@ def _claude_resume_command(
         "--resume",
         session_id,
         "--output-format",
-        "text",
+        "json",
         *permission_args,
     ]
     if model:
@@ -1147,6 +1214,7 @@ def _run_backend(
             "dry_run": True,
             "session_id": session_id,
             "kimi_baseline_line_counts": kimi_baseline_line_counts,
+            "usage_metadata": None,
         }
 
     _append_event(
@@ -1193,6 +1261,7 @@ def _run_backend(
             "dry_run": False,
             "session_id": session_id,
             "kimi_baseline_line_counts": kimi_baseline_line_counts,
+            "usage_metadata": None,
         }
 
     duration_seconds = round(time.monotonic() - process_started_at, 3)
@@ -1207,14 +1276,32 @@ def _run_backend(
         if not reply_text.strip() and session_id and result.returncode == 0:
             reply_text = _extract_opencode_reply_from_db(session_id)
         reply_path.write_text(reply_text, encoding="utf-8")
-    elif backend in {"claude", "kimi"}:
+        usage_metadata: dict[str, Any] | None = None
+    elif backend == "claude":
+        reply_text, usage_metadata = _parse_claude_json_reply(result.stdout or "")
+        reply_path.write_text(reply_text, encoding="utf-8")
+        if usage_metadata is not None:
+            _append_event(
+                events_path,
+                severity="INFO",
+                event="rate_limit_state",
+                backend="claude",
+                **{
+                    k: v
+                    for k, v in usage_metadata.items()
+                    if k in {"usage", "service_tier", "total_cost_usd"}
+                },
+            )
+    elif backend == "kimi":
         reply_text = result.stdout or ""
         reply_path.write_text(reply_text, encoding="utf-8")
+        usage_metadata = None
     else:
         reply_text = _read_text(reply_path) if reply_path.exists() else ""
         if not reply_text and result.stdout:
             reply_text = result.stdout
             reply_path.write_text(reply_text, encoding="utf-8")
+        usage_metadata = None
 
     _append_event(
         events_path,
@@ -1240,6 +1327,7 @@ def _run_backend(
         "dry_run": False,
         "session_id": session_id,
         "kimi_baseline_line_counts": kimi_baseline_line_counts,
+        "usage_metadata": usage_metadata,
     }
 
 
@@ -1325,6 +1413,7 @@ def _resume_backend(
             "dry_run": True,
             "session_id": session_id,
             "kimi_baseline_line_counts": kimi_baseline_line_counts,
+            "usage_metadata": None,
         }
 
     _append_event(
@@ -1373,6 +1462,7 @@ def _resume_backend(
             "dry_run": False,
             "session_id": session_id,
             "kimi_baseline_line_counts": kimi_baseline_line_counts,
+            "usage_metadata": None,
         }
 
     duration_seconds = round(time.monotonic() - started_at, 3)
@@ -1385,9 +1475,26 @@ def _resume_backend(
         if not reply_text.strip() and session_id and result.returncode == 0:
             reply_text = _extract_opencode_reply_from_db(session_id)
         reply_path.write_text(reply_text, encoding="utf-8")
-    elif backend in {"claude", "kimi"}:
+        usage_metadata: dict[str, Any] | None = None
+    elif backend == "claude":
+        reply_text, usage_metadata = _parse_claude_json_reply(result.stdout or "")
+        reply_path.write_text(reply_text, encoding="utf-8")
+        if usage_metadata is not None:
+            _append_event(
+                events_path,
+                severity="INFO",
+                event="rate_limit_state",
+                backend="claude",
+                **{
+                    k: v
+                    for k, v in usage_metadata.items()
+                    if k in {"usage", "service_tier", "total_cost_usd"}
+                },
+            )
+    elif backend == "kimi":
         reply_text = result.stdout or ""
         reply_path.write_text(reply_text, encoding="utf-8")
+        usage_metadata = None
     else:
         reply_text = _read_text(reply_path) if reply_path.exists() else ""
         if not reply_text and result.stdout:
@@ -1412,6 +1519,7 @@ def _resume_backend(
         "dry_run": False,
         "session_id": session_id,
         "kimi_baseline_line_counts": kimi_baseline_line_counts,
+        "usage_metadata": usage_metadata,
     }
 
 
@@ -1584,6 +1692,16 @@ def _command_run(args: argparse.Namespace) -> int:
         status=status,
     )
 
+    rate_limit_message = None
+    if (
+        backend == "claude"
+        and status == "escalate_to_user"
+        and run_result.get("reply_text")
+    ):
+        rate_limit_message = _classify_claude_failure(run_result["reply_text"])
+    if rate_limit_message:
+        message = rate_limit_message
+
     payload = {
         "status": status,
         "phase": args.phase,
@@ -1597,6 +1715,7 @@ def _command_run(args: argparse.Namespace) -> int:
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "events_path": str(events_path),
+        "ratelimit_at_exit": run_result.get("usage_metadata"),
         "process": {
             "command": run_result["command"],
             "exit_code": run_result["exit_code"],
@@ -1808,6 +1927,16 @@ def _command_resume(args: argparse.Namespace) -> int:
         session_id=args.session_id,
     )
 
+    rate_limit_message = None
+    if (
+        backend == "claude"
+        and status == "escalate_to_user"
+        and run_result.get("reply_text")
+    ):
+        rate_limit_message = _classify_claude_failure(run_result["reply_text"])
+    if rate_limit_message:
+        message = rate_limit_message
+
     payload = {
         "status": status,
         "phase": args.phase,
@@ -1821,6 +1950,7 @@ def _command_resume(args: argparse.Namespace) -> int:
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "events_path": str(events_path),
+        "ratelimit_at_exit": run_result.get("usage_metadata"),
         "process": {
             "command": run_result["command"],
             "exit_code": run_result["exit_code"],
