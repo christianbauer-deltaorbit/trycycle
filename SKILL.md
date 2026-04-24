@@ -335,12 +335,13 @@ Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only
 
 Use the review subagent's output as the fix-loop input. As soon as you have captured the reviewer's stdout or decided the review loop is done, close that completed review subagent and clear any saved handle or `session_id` for it.
 
-After every review round, save the reviewer's raw stdout to a temp file immediately and extract a structured review-observations artifact from it:
+After every review round, save the reviewer's raw stdout to a temp file immediately and extract a structured review-observations artifact from it. Pass the scratch-file glob so the extractor can synthesise the envelope from the reviewer's per-observation scratch blocks if the dispatch died before emitting the `<review_observations_json>` envelope:
 
 ```bash
 python3 <skill-directory>/orchestrator/review_observations.py extract \
   --reply <review-reply-temp-file> \
-  --output <review-observations-temp-file>
+  --output <review-observations-temp-file> \
+  --scratch-glob '/tmp/review-scratch-*.md'
 ```
 
 Treat the extractor's JSON stdout as authoritative for:

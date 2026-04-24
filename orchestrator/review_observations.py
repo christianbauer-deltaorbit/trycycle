@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import glob as glob_mod
 import json
 import re
 import sys
@@ -13,6 +14,20 @@ TAG_NAME = "review_observations_json"
 TAG_RE = re.compile(
     rf"<{TAG_NAME}>(?P<body>.*?)</{TAG_NAME}>",
     re.DOTALL,
+)
+# Per-observation fenced block the reviewer writes to its scratch file as
+# it works. Used by the scratch-file fallback when the main envelope is
+# missing or empty. Format:
+#
+#     ```observation
+#     {"id": "R1", "severity": "critical", ...}
+#     ```
+#
+# The fence language tag must be exactly "observation" (case-sensitive)
+# to avoid colliding with other code blocks in the scratch file.
+SCRATCH_OBSERVATION_RE = re.compile(
+    r"^```observation\s*\n(?P<body>.*?)\n```",
+    re.MULTILINE | re.DOTALL,
 )
 SEVERITIES = {"critical", "major", "minor", "nit"}
 CATEGORIES = {
@@ -60,6 +75,98 @@ def _extract_tagged_json(reply_text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ExtractionError("review observations root must be a JSON object")
     return payload
+
+
+def _resolve_scratch_paths(
+    *, scratch_files: list[str], scratch_globs: list[str]
+) -> list[Path]:
+    """Resolve --scratch-file and --scratch-glob into a list of Path objects.
+
+    Globs are expanded; missing paths and empty globs do not error so the
+    caller can pass several candidate locations and the fallback only
+    triggers when at least one matches.
+    """
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for raw in scratch_files:
+        path = Path(raw)
+        if path not in seen:
+            seen.add(path)
+            resolved.append(path)
+    for pattern in scratch_globs:
+        for match in glob_mod.glob(pattern):
+            path = Path(match)
+            if path not in seen:
+                seen.add(path)
+                resolved.append(path)
+    return resolved
+
+
+def _parse_scratch_observations(scratch_text: str) -> list[dict[str, Any]]:
+    """Pull each ```observation\n...\n``` fenced block from a scratch file.
+
+    Returns a list of parsed JSON objects in the order they appear. Skips
+    blocks whose body fails to parse as JSON or whose value is not an
+    object (so a stray code-block that happens to share the language tag
+    cannot poison the synthesis).
+    """
+    parsed: list[dict[str, Any]] = []
+    for match in SCRATCH_OBSERVATION_RE.finditer(scratch_text):
+        body = match.group("body").strip()
+        if not body:
+            continue
+        try:
+            value = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            parsed.append(value)
+    return parsed
+
+
+def _synthesize_payload_from_scratch(
+    scratch_paths: list[Path],
+) -> tuple[dict[str, Any], list[Path]]:
+    """Read the given scratch files and synthesise a review-observations
+    envelope from their fenced observation blocks.
+
+    Returns (payload, files_used). Empty observation set → status
+    "no_issues". Raises ExtractionError if no scratch file is readable
+    or if every readable file is empty of observation blocks.
+    """
+    aggregated: list[dict[str, Any]] = []
+    files_used: list[Path] = []
+    readable_count = 0
+    for path in scratch_paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        readable_count += 1
+        observations = _parse_scratch_observations(text)
+        if observations:
+            files_used.append(path)
+            aggregated.extend(observations)
+
+    if readable_count == 0:
+        raise ExtractionError(
+            "review reply lacked the envelope and no scratch file was readable"
+        )
+    if not aggregated:
+        # Scratch readable but contains no observation blocks → reviewer
+        # genuinely found nothing or never wrote any. Synthesise a clean
+        # no_issues envelope rather than guessing.
+        return {
+            "status": "no_issues",
+            "summary": "synthesised from empty review scratch",
+            "observations": [],
+        }, files_used
+
+    return {
+        "status": "issues_found",
+        "summary": f"synthesised from {len(files_used)} review-scratch file(s)",
+        "observations": aggregated,
+    }, files_used
 
 
 def _expect_string(value: Any, field_name: str) -> str:
@@ -221,7 +328,27 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def extract_command(args: argparse.Namespace) -> int:
     reply_path = Path(args.reply).resolve()
     output_path = Path(args.output).resolve()
-    payload = _extract_tagged_json(_read_text(reply_path))
+    reply_text = _read_text(reply_path)
+
+    source = "envelope"
+    files_used: list[Path] = []
+    try:
+        payload = _extract_tagged_json(reply_text)
+    except ExtractionError as primary_exc:
+        scratch_paths = _resolve_scratch_paths(
+            scratch_files=args.scratch_file,
+            scratch_globs=args.scratch_glob,
+        )
+        if not scratch_paths:
+            raise
+        try:
+            payload, files_used = _synthesize_payload_from_scratch(scratch_paths)
+        except ExtractionError as fallback_exc:
+            raise ExtractionError(
+                f"{primary_exc}; scratch-file fallback also failed: {fallback_exc}"
+            ) from fallback_exc
+        source = "scratch_fallback"
+
     normalized = normalize_payload(payload)
     _write_json(output_path, normalized)
 
@@ -233,7 +360,10 @@ def extract_command(args: argparse.Namespace) -> int:
         "blocking_issue_count": normalized["blocking_issue_count"],
         "has_blocking_issues": normalized["blocking_issue_count"] > 0,
         "review_status": normalized["status"],
+        "source": source,
     }
+    if source == "scratch_fallback":
+        result["scratch_files_used"] = [str(p) for p in files_used]
     json.dump(result, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     return 0
@@ -254,6 +384,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         required=True,
         help="Path to write the normalized review observations JSON.",
+    )
+    extract.add_argument(
+        "--scratch-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Fallback scratch file the reviewer writes structured observation"
+            " blocks into. Used only when the reply is missing the envelope."
+            " Repeatable."
+        ),
+    )
+    extract.add_argument(
+        "--scratch-glob",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help=(
+            "Glob pattern for scratch files (e.g. '/tmp/review-scratch-*.md')."
+            " Used only when the reply is missing the envelope. Repeatable."
+        ),
     )
     extract.set_defaults(func=extract_command)
 

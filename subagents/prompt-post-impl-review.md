@@ -14,6 +14,23 @@ Context gathering:
 
 As you find each observation, append it to a scratch artifact (e.g. a temp markdown file at `/tmp/review-scratch-$(date +%s).md`) via Write/Edit tool calls — one tool call per observation. Each tool call resets the streaming window. If you have been producing text for more than ~90 seconds without a tool call, flush your current findings to the scratch file and continue. Only compose the final `<review_observations_json>` block at the very end, using the scratch file as your source.
 
+**Critical scratch-file format.** Each observation MUST be written as a fenced ```observation``` block carrying the JSON object for that one observation. The runner mechanically reconstructs the final envelope from these blocks if your dispatch dies before emitting the `<review_observations_json>` envelope, so the format is load-bearing. Example:
+
+````
+```observation
+{"id": "R1", "severity": "critical", "category": "correctness",
+ "expected": "...", "observed": "...",
+ "where": {"file": "src/foo.py", "line": 42}}
+```
+
+```observation
+{"id": "R2", "severity": "major", "category": "missing_test",
+ "expected": "...", "observed": "..."}
+```
+````
+
+One observation per fenced block. Each block's body must be a JSON object matching the per-observation schema below. Do not split a single finding across blocks. Free-form notes in the scratch file outside these blocks are ignored by the runner.
+
 ## Output discipline
 
 Do not narrate process. Exclude `nit`-severity observations unless they materially affect correctness. Omit optional `evidence` sub-fields (`stdout_excerpt`, `stderr_excerpt`, `traceback_excerpt`, `notes`) unless they contain actual captured output; do not fill with placeholders. One observation per distinct finding — do not split a single issue across multiple observations. Keep `summary` to one sentence.
