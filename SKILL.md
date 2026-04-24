@@ -187,6 +187,24 @@ After every subagent completion, also run:
 - changed-file list matches what the subagent reported
 - any dirty status is understood and intentional
 
+## 5b) Life-signs gate (single deterministic check; not polling)
+
+The Critical Rules forbid busy-polling subagents. They do not forbid a single, file-mtime-only check at the SKILL-prescribed 5-minute monitoring cadence — that's not polling, it's verifying that the subagent has emitted SOME output recently. Use it ONLY when the subagent has produced no progress notification, no event, and no failure for at least one full polling window.
+
+Run the helper exactly once per cadence tick:
+
+```bash
+python3 <skill-directory>/orchestrator/lifesigns.py check-fallback --artifacts-dir <dispatch-artifacts-dir>
+```
+
+or, for native-Agent dispatches with a known transcript file:
+
+```bash
+python3 <skill-directory>/orchestrator/lifesigns.py check-native --transcript-file <transcript-path>
+```
+
+The helper reads file mtimes only — no model calls, no network, no polling loops — and prints a JSON object. Read `should_escalate`. If true, kill+retry the subagent at the SKILL-prescribed retry point. If false, do nothing further this tick. Do NOT call this helper more often than the prescribed monitor cadence.
+
 ## 6) Plan with trycycle-planning (subagent-owned)
 
 Spec writing must be done by a dedicated subagent.
