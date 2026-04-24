@@ -36,6 +36,11 @@ HEARTBEAT_SECTION = "Streaming discipline"
 # to tell run-sequence that all remaining repeatable steps can be skipped.
 SEQUENCE_DONE_SENTINEL = "[[TRYCYCLE_SEQUENCE_DONE]]"
 
+# Prompt-size warning threshold. Prompts above this routinely correlate
+# with stream-idle timeouts because the subagent burns initial tool-call
+# budget reading them. The transcript binding is the most common cause.
+PROMPT_SIZE_WARNING_BYTES = 100_000
+
 # Optional per-step header in a micro-step template:
 #
 #   <!-- trycycle-step:
@@ -245,6 +250,45 @@ def _reject_skill_md_as_template(template: Path) -> None:
         )
 
 
+def _check_prompt_size(prompt_path: Path, max_bytes: int | None) -> dict[str, Any]:
+    """Inspect rendered-prompt size. Warn over PROMPT_SIZE_WARNING_BYTES,
+    error when --max-prompt-bytes is set and exceeded.
+
+    Returns a `prompt_size` payload describing the verdict so callers can
+    surface it in their result.json. The warning is emitted to stderr so
+    automated callers see it.
+    """
+    try:
+        size_bytes = prompt_path.stat().st_size
+    except OSError:
+        return {"bytes": None, "verdict": "unknown"}
+
+    payload: dict[str, Any] = {
+        "bytes": size_bytes,
+        "warning_threshold_bytes": PROMPT_SIZE_WARNING_BYTES,
+        "max_bytes": max_bytes,
+        "verdict": "ok",
+    }
+    if max_bytes is not None and size_bytes > max_bytes:
+        payload["verdict"] = "exceeds_max"
+        raise PhaseError(
+            f"rendered prompt is {size_bytes} bytes, exceeding "
+            f"--max-prompt-bytes {max_bytes}. The transcript binding is the "
+            f"most common cause; consider trimming it via "
+            f"--ignore-tag-for-placeholders or use a narrower placeholder."
+        )
+    if size_bytes > PROMPT_SIZE_WARNING_BYTES:
+        payload["verdict"] = "warn"
+        print(
+            f"warning: rendered prompt is {size_bytes} bytes "
+            f"(>{PROMPT_SIZE_WARNING_BYTES} bytes). Large prompts correlate "
+            f"with stream-idle timeouts; the transcript binding is the most "
+            f"common cause.",
+            file=sys.stderr,
+        )
+    return payload
+
+
 def _prepare_phase(args: argparse.Namespace) -> dict[str, Any]:
     template = Path(args.template).resolve()
     _reject_skill_md_as_template(template)
@@ -262,6 +306,8 @@ def _prepare_phase(args: argparse.Namespace) -> dict[str, Any]:
         workdir=workdir,
     )
     prompt_path = _build_prompt(args, artifacts_dir, transcript_paths)
+    max_prompt_bytes = getattr(args, "max_prompt_bytes", None)
+    prompt_size = _check_prompt_size(prompt_path, max_prompt_bytes)
 
     payload = {
         "status": "prepared",
@@ -273,6 +319,7 @@ def _prepare_phase(args: argparse.Namespace) -> dict[str, Any]:
         "prompt_path": str(prompt_path),
         "transcript_cli": transcript_cli,
         "transcript_paths": transcript_paths,
+        "prompt_size": prompt_size,
     }
     if args.canary:
         payload["canary"] = args.canary
@@ -469,6 +516,7 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
             canary=args.canary,
             require_nonempty_tag=list(args.require_nonempty_tag),
             ignore_tag_for_placeholders=list(args.ignore_tag_for_placeholders),
+            max_prompt_bytes=args.max_prompt_bytes,
         )
 
         prepare_payload = _prepare_phase(step_args)
@@ -602,6 +650,17 @@ def _add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         metavar="TAG",
         help="Ignore placeholder-like text inside this rendered tag.",
+    )
+    parser.add_argument(
+        "--max-prompt-bytes",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Error out if the rendered prompt exceeds N bytes. When omitted,"
+            f" prompts over {PROMPT_SIZE_WARNING_BYTES} bytes log a warning"
+            " to stderr but proceed."
+        ),
     )
 
 
@@ -764,6 +823,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="TAG",
+    )
+    run_sequence_parser.add_argument(
+        "--max-prompt-bytes",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Per-step prompt-size cap. Error if any step's rendered prompt"
+            " exceeds N bytes. When omitted, large prompts log a warning."
+        ),
     )
     run_sequence_parser.add_argument(
         "--backend",
