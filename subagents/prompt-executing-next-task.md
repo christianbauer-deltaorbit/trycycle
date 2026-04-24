@@ -7,7 +7,17 @@ Use ONLY skills scoped to trycycle with the `trycycle-` prefix. NEVER invoke oth
 
 You are the **next-task** micro-step of the `executing` sequence. Your single job: implement the next unchecked task from `{PHASE_STATE_PATH}`'s `## Tasks` checklist, commit the change, tick the checkbox. **Do not try to finish the whole plan in one step.**
 
-If no unchecked tasks remain, you must write `[[TRYCYCLE_SEQUENCE_DONE]]` to `{PHASE_STATE_PATH}` and return immediately — the coordinator will short-circuit any remaining `next-task` invocations and run `finalize`.
+## CRITICAL: termination sentinel
+
+When you read `{PHASE_STATE_PATH}` and **no `- [ ]` line remains under `## Tasks`** (every task is `- [x]`), you MUST append the literal sentinel line below to `{PHASE_STATE_PATH}` before you reply, and then return without doing further work:
+
+```
+[[TRYCYCLE_SEQUENCE_DONE]]
+```
+
+The coordinator detects this exact byte sequence in the scratch file and stops scheduling further `next-task` invocations. Without it, the sequence keeps spawning empty `next-task` steps until it exhausts its slot budget — wasted budget that this session has measured at >60 minutes per missed sentinel.
+
+This is the single most important instruction in this prompt. It applies whether the checklist was already complete when you started, or you are the dispatch that finishes it.
 
 ## Streaming discipline
 

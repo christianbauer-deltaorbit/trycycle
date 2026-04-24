@@ -576,6 +576,14 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
             )
             break
 
+    diagnostics = _build_sequence_diagnostics(
+        steps=steps,
+        step_results=step_results,
+        short_circuit_set=short_circuit_set,
+        sentinel_seen=sentinel_seen,
+    )
+    sys.stderr.write(diagnostics["log_line"] + "\n")
+
     final_payload = {
         "status": overall_status,
         "phase": args.phase,
@@ -585,12 +593,68 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
         "final_reply_path": final_reply_path,
         "sentinel_seen": sentinel_seen,
         "duration_seconds": round(time.monotonic() - sequence_started_at, 3),
+        "diagnostics": diagnostics,
     }
     result_path = shared_artifacts_dir / "sequence-result.json"
     _write_json(result_path, final_payload)
     final_payload["result_path"] = str(result_path)
     _emit_json(final_payload)
     return 0 if overall_status == "ok" else 1
+
+
+def _build_sequence_diagnostics(
+    *,
+    steps: list[tuple[str, Path]],
+    step_results: list[dict[str, Any]],
+    short_circuit_set: set[str],
+    sentinel_seen: bool,
+) -> dict[str, Any]:
+    """One-line postmortem of a run-sequence dispatch, plus structured
+    counts for postmortem inspection in result.json.
+
+    Drawn from the user's evidence: across three executing dispatches in
+    the downstream session the sentinel was never written, leaving the
+    coordinator to discover at sequence end that all next-task slots had
+    been used. Surfacing the counts at sequence end makes that visible in
+    one glance instead of requiring a full sweep through step_results.
+    """
+    repeatable_total = sum(1 for name, _ in steps if name in short_circuit_set)
+    repeatable_completed = sum(
+        1
+        for entry in step_results
+        if entry["step"] in short_circuit_set and entry["status"] == "ok"
+    )
+    repeatable_skipped = sum(
+        1
+        for entry in step_results
+        if entry["step"] in short_circuit_set and entry.get("reason") == "sentinel_seen"
+    )
+    repeatable_failed = sum(
+        1
+        for entry in step_results
+        if entry["step"] in short_circuit_set
+        and entry["status"] not in {"ok", "skipped"}
+    )
+    log_line = (
+        f"sequence-diagnostic: sentinel_seen={str(sentinel_seen).lower()}; "
+        f"repeatable_completed={repeatable_completed}/{repeatable_total}; "
+        f"repeatable_skipped={repeatable_skipped}; "
+        f"repeatable_failed={repeatable_failed}"
+    )
+    if repeatable_total > 0 and not sentinel_seen and repeatable_failed == 0:
+        log_line += (
+            "; warning: all next-task slots ran without sentinel — "
+            "consider increasing --steps slot count or auditing the "
+            "subagent's sentinel emission"
+        )
+    return {
+        "log_line": log_line,
+        "repeatable_total_slots": repeatable_total,
+        "repeatable_completed": repeatable_completed,
+        "repeatable_skipped": repeatable_skipped,
+        "repeatable_failed": repeatable_failed,
+        "sentinel_seen": sentinel_seen,
+    }
 
 
 def _add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
