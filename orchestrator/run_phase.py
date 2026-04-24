@@ -36,6 +36,63 @@ HEARTBEAT_SECTION = "Streaming discipline"
 # to tell run-sequence that all remaining repeatable steps can be skipped.
 SEQUENCE_DONE_SENTINEL = "[[TRYCYCLE_SEQUENCE_DONE]]"
 
+# Optional per-step header in a micro-step template:
+#
+#   <!-- trycycle-step:
+#     timeout-seconds: 7200
+#   -->
+#
+# Supported keys today: timeout-seconds (int). Unknown keys are ignored so
+# templates can declare new fields without breaking older runners.
+_STEP_HEADER_RE = re.compile(
+    r"<!--\s*trycycle-step:\s*(?P<body>.*?)-->",
+    re.DOTALL,
+)
+
+
+def _parse_step_header(template_text: str) -> dict[str, Any]:
+    """Extract the optional `<!-- trycycle-step: ... -->` block.
+
+    Returns a dict of the declared fields, or {} when the block is missing.
+    Format: simple `key: value` lines, one per line. Values are str-stripped;
+    integer-shaped values are returned as int. Unknown keys are preserved
+    as strings so future runners can pick them up without code changes here.
+    """
+    match = _STEP_HEADER_RE.search(template_text)
+    if not match:
+        return {}
+    fields: dict[str, Any] = {}
+    for raw_line in match.group("body").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
+            fields[key] = int(value)
+        else:
+            fields[key] = value
+    return fields
+
+
+def _resolve_step_timeout_seconds(
+    template_path: Path,
+    cli_default: int | None,
+) -> int | None:
+    """Per-step timeout: prefer the template header value when present,
+    otherwise fall back to the CLI-level --timeout-seconds default."""
+    try:
+        text = template_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return cli_default
+    declared = _parse_step_header(text).get("timeout-seconds")
+    if isinstance(declared, int) and declared > 0:
+        return declared
+    return cli_default
+
 
 class PhaseError(RuntimeError):
     pass
@@ -417,6 +474,10 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
         prepare_payload = _prepare_phase(step_args)
         dispatch_dir = Path(prepare_payload["artifacts_dir"]) / "dispatch"
 
+        step_timeout_seconds = _resolve_step_timeout_seconds(
+            template_path, args.timeout_seconds
+        )
+
         dispatch_payload, returncode = _dispatch_via_runner(
             phase=step_args.phase,
             prompt_path=prepare_payload["prompt_path"],
@@ -426,7 +487,7 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
             effort=args.effort,
             profile=args.profile,
             model=args.model,
-            timeout_seconds=args.timeout_seconds,
+            timeout_seconds=step_timeout_seconds,
             dry_run=args.dry_run,
         )
 
@@ -438,6 +499,7 @@ def _command_run_sequence(args: argparse.Namespace) -> int:
                 "status": step_status,
                 "dispatch": dispatch_payload,
                 "prompt_path": prepare_payload["prompt_path"],
+                "timeout_seconds": step_timeout_seconds,
             }
         )
 
