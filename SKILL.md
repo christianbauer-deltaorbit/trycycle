@@ -205,6 +205,24 @@ python3 <skill-directory>/orchestrator/lifesigns.py check-native --transcript-fi
 
 The helper reads file mtimes only — no model calls, no network, no polling loops — and prints a JSON object. Read `should_escalate`. If true, kill+retry the subagent at the SKILL-prescribed retry point. If false, do nothing further this tick. Do NOT call this helper more often than the prescribed monitor cadence.
 
+## 5c) Periodic self-advancement (`/loop` pairing)
+
+The Claude Code harness only delivers background-task notifications at agent-turn boundaries, so the "monitor every 5 minutes" rule above is structurally unreachable without a wake-up mechanism. The bundled `/loop` skill supplies that wake-up. Pair it with the user-installed `/trycycle-pulse` slash command (see `pulse-skill/` in this repo, plus `~/.claude/skills/trycycle-pulse` symlink instructions in `README.md`).
+
+**When to use.** Long phases the user expects to be away from the keyboard for: `planning-initial`, the plan-editor loop, `executing` (especially the run-sequence variant), and the post-implementation review loop. Useless for short or always-blocking phases (`test-strategy`, `finish`).
+
+**How.** After dispatching a long phase via the fallback runner, send:
+
+```
+/loop 10m /trycycle-pulse
+```
+
+Each tick, pulse discovers the most recent `/tmp/trycycle-{phase,seq}-*` dispatch, runs `lifesigns.py check-fallback` against it, and either reports liveness (one line) or auto-advances to the next gate-free phase via a backgrounded fallback-runner dispatch. Pulse stops at every hard gate the skill defines: USER DECISION REQUIRED replies, plan-editor 5-round cap, test-plan strategy-change section, review 8-round cap, review with `blocking_issue_count == 0` (proceed to `finish`), and any non-ok dispatch status.
+
+**Limitations.** Pulse only inspects fallback-runner dispatches (those write to `/tmp/trycycle-*`). Native-Agent dispatches are invisible to it. Pulse reuses an existing `inputs/USER_REQUEST_TRANSCRIPT.txt` from a prior phase rather than running canary lookup itself — so the FIRST phase that needs a transcript must still be dispatched by the trycycle session before pulse can advance from it.
+
+**How to stop.** Pulse cannot programmatically cancel `/loop`; it only prints a `=== STOP THE LOOP ===` banner when it hits a hard gate. The user reads the banner and sends a stop message in the trycycle session per `/loop`'s own stop convention.
+
 ## 6) Plan with trycycle-planning (subagent-owned)
 
 Spec writing must be done by a dedicated subagent.

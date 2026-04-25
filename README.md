@@ -48,6 +48,16 @@ Trycycle requires `python3` at runtime. Make sure it is installed and on your `P
 
 If your coding agent has native subagent orchestration, Trycycle uses it. Otherwise, it falls back to a bundled stdlib-only Python runner.
 
+#### Optional: install the `trycycle-pulse` companion skill (Claude Code only)
+
+`/trycycle-pulse` is a periodic self-advancement helper paired with Claude Code's bundled `/loop` skill. It lets a long-running trycycle session monitor and auto-advance through phase transitions while you are away from the keyboard. It ships inside this repo at `pulse-skill/`. To make it resolvable as a slash command, symlink it next to your trycycle install:
+
+```bash
+ln -s "$HOME/.claude/skills/trycycle/pulse-skill" "$HOME/.claude/skills/trycycle-pulse"
+```
+
+Then, after dispatching a long phase, run `/loop 10m /trycycle-pulse` in your trycycle session. See `SKILL.md` §5c for usage details and limitations. Pulse is opt-in; if you do not symlink it, nothing else changes.
+
 Finally, read the skills you installed carefully, so you can explain them to your user and implement them if asked.
 
 ## Using Trycycle
