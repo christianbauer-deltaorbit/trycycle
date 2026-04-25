@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -63,6 +64,103 @@ def _mtime_or_none(path: Path) -> float | None:
         return path.stat().st_mtime
     except OSError:
         return None
+
+
+def _read_recent_process_spawned(events_path: Path) -> dict[str, Any] | None:
+    """Walk events.jsonl in reverse and return the most recent
+    `process_spawned` event as a parsed dict. Returns None when the file
+    is unreadable, empty, or contains no such event.
+
+    Subagent_runner emits one `process_spawned` per dispatch with the
+    spawned subprocess's PID. Lifesigns uses that PID to distinguish a
+    subagent that's silent because it died from one that's silent because
+    `claude -p --output-format=json` buffers its result until completion.
+    """
+    try:
+        text = events_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    most_recent: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("event") == "process_spawned":
+            most_recent = event
+    return most_recent
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Probe whether `pid` names a live process. Returns False when the
+    pid does not exist (`ProcessLookupError`) and re-raises only on truly
+    unexpected errors. `os.kill(pid, 0)` is the standard POSIX idiom.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists; we just don't have permission to signal it.
+        # Treat as alive — that's a stronger guarantee than os.kill(0).
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _read_proc_cmdline(pid: int) -> list[str] | None:
+    """Best-effort read of /proc/<pid>/cmdline. Linux-only; returns None
+    on any platform where /proc isn't available or readable. Used to
+    defend against PID reuse: if the recorded process_spawned command
+    doesn't match the live process's argv, the PID has been recycled and
+    the subagent is dead after all.
+    """
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = proc_cmdline.read_bytes()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    parts = raw.split(b"\x00")
+    if parts and parts[-1] == b"":
+        parts = parts[:-1]
+    try:
+        return [part.decode("utf-8") for part in parts]
+    except UnicodeDecodeError:
+        return None
+
+
+def _subprocess_alive_and_matches(
+    *, pid: int, expected_command: list[str] | None
+) -> tuple[bool, str]:
+    """Combined liveness + cmdline-reuse check.
+
+    Returns (alive, detail_string). `alive=True` means the subprocess
+    exists AND, where /proc is readable, its argv matches the recorded
+    command. Detail is a short human-readable note for the lifesigns
+    `reason` field.
+    """
+    if not _pid_is_alive(pid):
+        return False, f"pid {pid} no longer exists"
+    if expected_command is None:
+        return True, f"pid {pid} alive (cmdline check skipped: no recorded command)"
+    cmdline = _read_proc_cmdline(pid)
+    if cmdline is None:
+        # /proc not readable — treat liveness as authoritative.
+        return True, f"pid {pid} alive (cmdline check unavailable on this platform)"
+    # Compare argv vectors verbatim. Subagent_runner records the same
+    # absolute paths it spawns with, so exact equality is the right test.
+    if cmdline == expected_command:
+        return True, f"pid {pid} alive and cmdline matches recorded command"
+    return False, (
+        f"pid {pid} exists but cmdline does not match recorded command "
+        "(PID likely reused after subagent exited)"
+    )
 
 
 def _check_paths(paths: list[Path], *, threshold_seconds: float) -> dict[str, Any]:
@@ -109,13 +207,71 @@ def check_fallback(artifacts_dir: Path, *, threshold_seconds: float) -> dict[str
     recent of those is the most recent observed activity. A directory
     where none of these exist is treated as `should_escalate` because the
     subagent has not even started writing output.
+
+    When mtime alone says escalate, additionally probe the subprocess PID
+    recorded in events.jsonl::process_spawned. `claude -p
+    --output-format=json` buffers its result until completion, so a
+    long-running step legitimately produces no further mtime updates
+    after spawn. If the recorded PID is still alive (and, on Linux, its
+    /proc cmdline still matches the recorded command — defending against
+    PID reuse) we override should_escalate to False with an enriched
+    reason. Older runner versions that don't record the PID fall through
+    to mtime-only behaviour.
     """
     paths = [
         artifacts_dir / "events.jsonl",
         artifacts_dir / "stdout.txt",
         artifacts_dir / "stderr.txt",
     ]
-    return _check_paths(paths, threshold_seconds=threshold_seconds)
+    report = _check_paths(paths, threshold_seconds=threshold_seconds)
+    if not report.get("should_escalate"):
+        return report
+    if report.get("reason") == "no_signal_paths_exist":
+        # Subagent never started — no PID to probe. Existing behaviour wins.
+        return report
+
+    events_path = artifacts_dir / "events.jsonl"
+    spawned = _read_recent_process_spawned(events_path)
+    if spawned is None:
+        report.setdefault(
+            "reason",
+            "stale mtimes past threshold and no process_spawned event recorded",
+        )
+        return report
+
+    pid = spawned.get("pid")
+    if not isinstance(pid, int):
+        # Older runner version — fall back to mtime-only behaviour.
+        report.setdefault(
+            "reason",
+            "stale mtimes past threshold; process_spawned event lacks pid "
+            "(older runner version)",
+        )
+        return report
+
+    expected_command = spawned.get("command")
+    if not isinstance(expected_command, list):
+        expected_command = None
+    alive, detail = _subprocess_alive_and_matches(
+        pid=pid, expected_command=expected_command
+    )
+    report["subprocess_probe"] = {
+        "pid": pid,
+        "alive": alive,
+        "detail": detail,
+    }
+    if alive:
+        report["should_escalate"] = False
+        report["reason"] = (
+            f"subprocess {pid} still running, last artifact write "
+            f"{report['last_activity_seconds_ago']}s ago "
+            "(claude --output-format=json buffers output until completion)"
+        )
+    else:
+        report["reason"] = (
+            f"stale mtimes past threshold and {detail}"
+        )
+    return report
 
 
 def check_native(transcript_file: Path, *, threshold_seconds: float) -> dict[str, Any]:

@@ -1217,34 +1217,64 @@ def _run_backend(
             "usage_metadata": None,
         }
 
+    child_env = os.environ.copy()
+    child_env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+    # Use Popen + communicate (instead of subprocess.run) so we can record
+    # the spawned PID in events.jsonl. lifesigns reads that PID to decide
+    # whether a long-running step's output silence is a healthy
+    # buffered-output state vs. a dead subprocess.
+    process_started_at = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            env=child_env,
+        )
+    except OSError as exc:
+        _append_event(
+            events_path,
+            severity="ERROR",
+            event="process_spawn_failed",
+            backend=backend,
+            command=command,
+            error=str(exc),
+        )
+        raise
+
     _append_event(
         events_path,
         severity="INFO",
         event="process_spawned",
         backend=backend,
         command=command,
+        pid=proc.pid,
     )
 
-    child_env = os.environ.copy()
-    child_env.pop("CLAUDE_CODE_ENTRYPOINT", None)
-
-    process_started_at = time.monotonic()
     try:
-        result = subprocess.run(
-            command,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            cwd=cwd,
-            check=False,
-            timeout=timeout_seconds,
-            env=child_env,
+        stdout_text, stderr_text = proc.communicate(
+            input=prompt_text, timeout=timeout_seconds
+        )
+        result = subprocess.CompletedProcess(
+            args=command,
+            returncode=proc.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
         )
         timed_out = False
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout_text, stderr_text = proc.communicate()
+        except (OSError, ValueError):
+            stdout_text, stderr_text = "", ""
         duration_seconds = round(time.monotonic() - process_started_at, 3)
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        stdout_path.write_text(stdout_text or "", encoding="utf-8")
+        stderr_path.write_text(stderr_text or "", encoding="utf-8")
         _append_event(
             events_path,
             severity="ERROR",
@@ -1252,6 +1282,7 @@ def _run_backend(
             backend=backend,
             timeout_seconds=timeout_seconds,
             duration_seconds=duration_seconds,
+            pid=proc.pid,
         )
         return {
             "command": command,
@@ -1416,6 +1447,36 @@ def _resume_backend(
             "usage_metadata": None,
         }
 
+    child_env = os.environ.copy()
+    child_env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+    # Use Popen + communicate (instead of subprocess.run) so we can record
+    # the spawned PID in events.jsonl. lifesigns reads that PID to decide
+    # whether a long-running resume's output silence is a healthy
+    # buffered-output state vs. a dead subprocess.
+    started_at = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            env=child_env,
+        )
+    except OSError as exc:
+        _append_event(
+            events_path,
+            severity="ERROR",
+            event="process_spawn_failed",
+            backend=backend,
+            command=command,
+            session_id=session_id,
+            error=str(exc),
+        )
+        raise
+
     _append_event(
         events_path,
         severity="INFO",
@@ -1423,28 +1484,29 @@ def _resume_backend(
         backend=backend,
         command=command,
         session_id=session_id,
+        pid=proc.pid,
     )
 
-    child_env = os.environ.copy()
-    child_env.pop("CLAUDE_CODE_ENTRYPOINT", None)
-
-    started_at = time.monotonic()
     try:
-        result = subprocess.run(
-            command,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            cwd=cwd,
-            check=False,
-            timeout=timeout_seconds,
-            env=child_env,
+        stdout_text, stderr_text = proc.communicate(
+            input=prompt_text, timeout=timeout_seconds
+        )
+        result = subprocess.CompletedProcess(
+            args=command,
+            returncode=proc.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
         )
         timed_out = False
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout_text, stderr_text = proc.communicate()
+        except (OSError, ValueError):
+            stdout_text, stderr_text = "", ""
         duration_seconds = round(time.monotonic() - started_at, 3)
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        stdout_path.write_text(stdout_text or "", encoding="utf-8")
+        stderr_path.write_text(stderr_text or "", encoding="utf-8")
         _append_event(
             events_path,
             severity="ERROR",
@@ -1453,6 +1515,7 @@ def _resume_backend(
             timeout_seconds=timeout_seconds,
             duration_seconds=duration_seconds,
             session_id=session_id,
+            pid=proc.pid,
         )
         return {
             "command": command,
