@@ -56,7 +56,7 @@ If your coding agent has native subagent orchestration, Trycycle uses it. Otherw
 ln -s "$HOME/.claude/skills/trycycle/pulse-skill" "$HOME/.claude/skills/trycycle-pulse"
 ```
 
-Then, after dispatching a long phase, run `/loop 10m /trycycle-pulse` in your trycycle session. See `SKILL.md` §5c for usage details and limitations. Pulse is opt-in; if you do not symlink it, nothing else changes.
+Pulse is opt-in; if you do not symlink it, nothing else changes. See "Using `/trycycle-pulse`" below for invocation, the worked example, and how to stop the loop.
 
 Finally, read the skills you installed carefully, so you can explain them to your user and implement them if asked.
 
@@ -73,6 +73,63 @@ Trycycle asks any questions it needs, then handles the rest: worktree, plan, pla
 If you're already inside an isolated workspace such as a Conductor workspace and the current branch is already not the default branch, include the literal flag `--no-worktree` in your request to reuse that workspace instead of creating a nested git worktree. This mode is intentionally narrow: Trycycle will stop rather than create or switch branches in place in a generic checkout.
 
 Works for anything from small features to large refactors, best when you have a clear goal and a codebase Trycycle can read and test.
+
+### Using `/trycycle-pulse` (Claude Code only)
+
+If you installed the `/trycycle-pulse` companion skill (see "Optional: install the trycycle-pulse companion skill" above), you can pair it with Claude Code's bundled `/loop` skill so a long-running Trycycle session self-advances through phase transitions while you're away from the keyboard. It addresses a structural quirk of the harness: background-task notifications only deliver at agent-turn boundaries, so Trycycle's "monitor every 5 minutes" rule is unreachable without an external wake-up. `/loop` is that wake-up; pulse is the per-tick handler.
+
+**When to use it.** Any time you've dispatched a long phase via the fallback runner (`run_phase.py run` / `run-sequence`) — typically `planning-initial`, the plan-editor loop, `executing`, or the post-implementation review loop — and you don't want to babysit it.
+
+**How to invoke.** Inside the Trycycle session, after the long phase has been dispatched in the background, send:
+
+```
+/loop 10m /trycycle-pulse
+```
+
+Each tick (every ten minutes by default), pulse:
+- finds the most recent `/tmp/trycycle-{phase,seq}-*` dispatch directory,
+- runs `lifesigns.py check-fallback` against it, and
+- prints a one-screen structured summary classified as `alive`, `advance`, `hard_gate`, `escalate`, or `idle`.
+
+When the dispatched phase completes successfully and the next transition is gate-free, pulse backgrounds the next phase's dispatch automatically. When it hits a hard gate (e.g. `USER DECISION REQUIRED:`, plan-editor 5-round cap, test-plan strategy-changes section, review 8-round cap, review with zero blocking issues → `finish`), pulse prints a clear `=== STOP THE LOOP ===` banner naming the gate.
+
+**How to stop the loop.** Pulse cannot programmatically cancel `/loop`. When you see the stop banner — or whenever you want to take over manually — send a stop message in the Trycycle session per the `/loop` skill's own stop convention.
+
+**Worked example.**
+
+```
+> Trycycle, refactor the meshing module. (Trycycle dispatches planning-initial.)
+
+> /loop 10m /trycycle-pulse
+
+[trycycle-pulse 12:00Z] kind=alive
+  phase: planning-initial
+  reason: planning-initial still running; last activity 12.4s ago
+
+[trycycle-pulse 12:10Z] kind=alive
+  phase: planning-initial
+  reason: planning-initial still running; last activity 8.1s ago
+
+[trycycle-pulse 12:20Z] kind=advance
+  phase: planning-initial
+  reason: planning-initial complete; dispatching planning-edit round 1
+  next-phase: planning-edit
+
+[trycycle-pulse 12:30Z] kind=alive
+  phase: planning-edit
+  reason: planning-edit still running; last activity 4.8s ago
+
+… (advances through plan-editor → test-plan → executing → review) …
+
+[trycycle-pulse 14:50Z] kind=hard_gate
+  phase: post-implementation-review
+  reason: review reports 0 blocking issues — proceed to finish (integration step always requires user approval)
+
+=== STOP THE LOOP ===
+Send a stop message to your trycycle session and address the gate above before resuming.
+```
+
+**Limitations.** Pulse only observes fallback-runner dispatches (those write to `/tmp/trycycle-*`); native-Agent dispatches are invisible to it. Pulse reuses an existing transcript binding (`USER_REQUEST_TRANSCRIPT.txt`) from a prior phase rather than running canary lookup itself, so the FIRST phase that needs a transcript must still be dispatched by the Trycycle session before pulse can take over from there. See `SKILL.md` §5c for the full constraint list.
 
 ## How it works
 
