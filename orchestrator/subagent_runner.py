@@ -515,6 +515,138 @@ def _parse_claude_json_reply(stdout: str) -> tuple[str, dict[str, Any] | None]:
     return reply, metadata
 
 
+def _drive_claude_streaming(
+    *,
+    proc: subprocess.Popen,
+    prompt_text: str,
+    timeout_seconds: int | None,
+    events_path: Path,
+) -> tuple[str, str, str | None, dict[str, Any] | None]:
+    """Drive a `claude --output-format stream-json` subprocess line-by-line.
+
+    Layer 3 of the buffered-output false-positive fix. Whereas
+    `--output-format json` writes its single result envelope only at the
+    very end of the run (so dispatch-dir mtimes never update mid-step),
+    `--output-format stream-json` writes one JSON object per line for
+    every assistant message, tool use, tool result, and the terminal
+    result. This helper reads each line as it arrives and appends a
+    `subagent_event` row to events.jsonl. The mtime updates that ripple
+    out are what lifesigns' simple mtime check needs to see a long step
+    as healthy.
+
+    The reply text comes from the terminal `type: "result"` event; the
+    same event also carries usage/cost metadata that the rate-limit
+    surface (P1) plumbs into result.json.
+
+    Failure modes per the design spec:
+      - malformed line: skipped silently; raw bytes preserved in
+        stdout_text so reply.txt can fall back if the terminal event
+        never arrives.
+      - missing terminal result event (premature exit, fake binary that
+        emits non-JSON): final_reply is None; caller falls back to
+        raw stdout via the existing _parse_claude_json_reply contract.
+      - stderr noise: claude writes JSON only to stdout; stderr is
+        captured separately and never affects parsing.
+
+    Returns (stdout_text, stderr_text, final_reply, usage_metadata).
+    Raises subprocess.TimeoutExpired on wall-clock timeout, with
+    `output` and `stderr` populated from whatever buffered before kill.
+    """
+    import threading
+
+    if proc.stdin is not None:
+        try:
+            if prompt_text:
+                proc.stdin.write(prompt_text)
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    raw_lines: list[str] = []
+    final_reply: list[str | None] = [None]
+    final_usage: list[dict[str, Any] | None] = [None]
+    reader_error: list[BaseException | None] = [None]
+
+    def reader() -> None:
+        try:
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                raw_lines.append(raw_line)
+                line = raw_line.rstrip("\r\n").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                _append_event(
+                    events_path,
+                    severity="INFO",
+                    event="subagent_event",
+                    type=event.get("type"),
+                    payload=event,
+                )
+                if event.get("type") == "result":
+                    if isinstance(event.get("result"), str):
+                        final_reply[0] = event["result"]
+                    captured = {
+                        key: event[key]
+                        for key in _CLAUDE_USAGE_KEYS
+                        if key in event
+                    }
+                    if captured:
+                        final_usage[0] = captured
+        except BaseException as exc:  # noqa: BLE001
+            reader_error[0] = exc
+
+    thread = threading.Thread(
+        target=reader,
+        name="claude-stream-reader",
+        daemon=False,
+    )
+    thread.start()
+
+    try:
+        proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        thread.join(timeout=5)
+        stderr_text = ""
+        if proc.stderr is not None:
+            try:
+                stderr_text = proc.stderr.read() or ""
+            except (OSError, ValueError):
+                stderr_text = ""
+        stdout_text = "".join(raw_lines)
+        raise subprocess.TimeoutExpired(
+            cmd=proc.args,
+            timeout=timeout_seconds or 0,
+            output=stdout_text,
+            stderr=stderr_text,
+        )
+
+    thread.join()
+    if reader_error[0] is not None:
+        raise RuntimeError(
+            f"claude stream reader thread crashed: {reader_error[0]!r}"
+        )
+
+    stderr_text = ""
+    if proc.stderr is not None:
+        try:
+            stderr_text = proc.stderr.read() or ""
+        except (OSError, ValueError):
+            stderr_text = ""
+
+    return "".join(raw_lines), stderr_text, final_reply[0], final_usage[0]
+
+
 def _classify_claude_failure(reply_text: str) -> str | None:
     """Recognise account-level rate-limit replies. Returns the elevation
     message to show as `dispatch.message`, or None if the failure does not
@@ -855,7 +987,11 @@ def _claude_command(
         "--session-id",
         session_id,
         "--output-format",
-        "json",
+        "stream-json",
+        # `--verbose` is required by claude when --print is combined with
+        # --output-format=stream-json. Without it the CLI exits 1 before
+        # any output is produced.
+        "--verbose",
         *permission_args,
     ]
     if model:
@@ -882,7 +1018,11 @@ def _claude_resume_command(
         "--resume",
         session_id,
         "--output-format",
-        "json",
+        "stream-json",
+        # `--verbose` is required by claude when --print is combined with
+        # --output-format=stream-json. Without it the CLI exits 1 before
+        # any output is produced.
+        "--verbose",
         *permission_args,
     ]
     if model:
@@ -1255,10 +1395,22 @@ def _run_backend(
         pid=proc.pid,
     )
 
+    streamed_reply: str | None = None
+    streamed_usage: dict[str, Any] | None = None
     try:
-        stdout_text, stderr_text = proc.communicate(
-            input=prompt_text, timeout=timeout_seconds
-        )
+        if backend == "claude":
+            stdout_text, stderr_text, streamed_reply, streamed_usage = (
+                _drive_claude_streaming(
+                    proc=proc,
+                    prompt_text=prompt_text,
+                    timeout_seconds=timeout_seconds,
+                    events_path=events_path,
+                )
+            )
+        else:
+            stdout_text, stderr_text = proc.communicate(
+                input=prompt_text, timeout=timeout_seconds
+            )
         result = subprocess.CompletedProcess(
             args=command,
             returncode=proc.returncode,
@@ -1266,12 +1418,19 @@ def _run_backend(
             stderr=stderr_text,
         )
         timed_out = False
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            stdout_text, stderr_text = proc.communicate()
-        except (OSError, ValueError):
-            stdout_text, stderr_text = "", ""
+    except subprocess.TimeoutExpired as exc:
+        # When _drive_claude_streaming raised, exc already carries the
+        # buffered stdout/stderr it captured. For other backends we still
+        # need to drain after kill().
+        if backend == "claude":
+            stdout_text = exc.stdout or ""
+            stderr_text = exc.stderr or ""
+        else:
+            proc.kill()
+            try:
+                stdout_text, stderr_text = proc.communicate()
+            except (OSError, ValueError):
+                stdout_text, stderr_text = "", ""
         duration_seconds = round(time.monotonic() - process_started_at, 3)
         stdout_path.write_text(stdout_text or "", encoding="utf-8")
         stderr_path.write_text(stderr_text or "", encoding="utf-8")
@@ -1309,7 +1468,17 @@ def _run_backend(
         reply_path.write_text(reply_text, encoding="utf-8")
         usage_metadata: dict[str, Any] | None = None
     elif backend == "claude":
-        reply_text, usage_metadata = _parse_claude_json_reply(result.stdout or "")
+        # Layer 3: prefer the reply + usage extracted by the stream reader
+        # from the terminal `type: "result"` event. Falls back to the
+        # legacy single-object parser when no terminal event arrived
+        # (fake-binary tests, premature exit, malformed stream).
+        if streamed_reply is not None:
+            reply_text = streamed_reply
+            usage_metadata = streamed_usage
+        else:
+            reply_text, usage_metadata = _parse_claude_json_reply(
+                result.stdout or ""
+            )
         reply_path.write_text(reply_text, encoding="utf-8")
         if usage_metadata is not None:
             _append_event(
@@ -1487,10 +1656,22 @@ def _resume_backend(
         pid=proc.pid,
     )
 
+    streamed_reply: str | None = None
+    streamed_usage: dict[str, Any] | None = None
     try:
-        stdout_text, stderr_text = proc.communicate(
-            input=prompt_text, timeout=timeout_seconds
-        )
+        if backend == "claude":
+            stdout_text, stderr_text, streamed_reply, streamed_usage = (
+                _drive_claude_streaming(
+                    proc=proc,
+                    prompt_text=prompt_text,
+                    timeout_seconds=timeout_seconds,
+                    events_path=events_path,
+                )
+            )
+        else:
+            stdout_text, stderr_text = proc.communicate(
+                input=prompt_text, timeout=timeout_seconds
+            )
         result = subprocess.CompletedProcess(
             args=command,
             returncode=proc.returncode,
@@ -1498,12 +1679,16 @@ def _resume_backend(
             stderr=stderr_text,
         )
         timed_out = False
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            stdout_text, stderr_text = proc.communicate()
-        except (OSError, ValueError):
-            stdout_text, stderr_text = "", ""
+    except subprocess.TimeoutExpired as exc:
+        if backend == "claude":
+            stdout_text = exc.stdout or ""
+            stderr_text = exc.stderr or ""
+        else:
+            proc.kill()
+            try:
+                stdout_text, stderr_text = proc.communicate()
+            except (OSError, ValueError):
+                stdout_text, stderr_text = "", ""
         duration_seconds = round(time.monotonic() - started_at, 3)
         stdout_path.write_text(stdout_text or "", encoding="utf-8")
         stderr_path.write_text(stderr_text or "", encoding="utf-8")
@@ -1540,7 +1725,17 @@ def _resume_backend(
         reply_path.write_text(reply_text, encoding="utf-8")
         usage_metadata: dict[str, Any] | None = None
     elif backend == "claude":
-        reply_text, usage_metadata = _parse_claude_json_reply(result.stdout or "")
+        # Layer 3: prefer the reply + usage extracted by the stream reader
+        # from the terminal `type: "result"` event. Falls back to the
+        # legacy single-object parser when no terminal event arrived
+        # (fake-binary tests, premature exit, malformed stream).
+        if streamed_reply is not None:
+            reply_text = streamed_reply
+            usage_metadata = streamed_usage
+        else:
+            reply_text, usage_metadata = _parse_claude_json_reply(
+                result.stdout or ""
+            )
         reply_path.write_text(reply_text, encoding="utf-8")
         if usage_metadata is not None:
             _append_event(

@@ -205,6 +205,8 @@ python3 <skill-directory>/orchestrator/lifesigns.py check-native --transcript-fi
 
 The helper reads file mtimes only — no model calls, no network, no polling loops — and prints a JSON object. Read `should_escalate`. If true, kill+retry the subagent at the SKILL-prescribed retry point. If false, do nothing further this tick. Do NOT call this helper more often than the prescribed monitor cadence.
 
+When mtimes are stale past the threshold but the subagent's spawned subprocess is still alive (a healthy long-running step where `claude --output-format stream-json` is mid-task), the helper exempts the dispatch from escalation: it parses `events.jsonl` for the most recent `process_spawned` event, probes `os.kill(<pid>, 0)`, and on Linux additionally cross-checks `/proc/<pid>/cmdline` against the recorded command vector to defend against PID reuse. When it overrides, the result populates a `subprocess_probe` block (`{"pid": ..., "alive": true, "detail": ...}`) and rewrites `reason` to name the live PID and the buffered-output explanation. Pulse consumes that block to surface a distinct `kind=alive_subprocess_active` instead of `kind=alive`.
+
 ## 5c) Periodic self-advancement (`/loop` pairing)
 
 The Claude Code harness only delivers background-task notifications at agent-turn boundaries, so the "monitor every 5 minutes" rule above is structurally unreachable without a wake-up mechanism. The bundled `/loop` skill supplies that wake-up. Pair it with the user-installed `/trycycle-pulse` slash command (see `pulse-skill/` in this repo, plus `~/.claude/skills/trycycle-pulse` symlink instructions in `README.md`).

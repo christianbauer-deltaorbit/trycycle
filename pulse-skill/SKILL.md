@@ -12,7 +12,8 @@ A single tick of trycycle's missing wake-up loop. The Claude Code harness only d
 1. Discovers the most recent fallback-runner dispatch under `/tmp/trycycle-{phase,seq}-*` (sorted by mtime).
 2. Calls `lifesigns.py check-fallback` against the latest dispatch directory.
 3. Branches on the result:
-   - **alive** — emits a one-line status and exits.
+   - **alive** — mtimes fresh; emits a one-line status and exits.
+   - **alive_subprocess_active** — mtimes stale but the spawned `claude` subprocess is still running (lifesigns confirmed via PID probe). This is the expected state during a long single-step subagent, where `claude --output-format stream-json` may go quiet between events. Pulse names the live PID and notes the buffered-output explanation; otherwise behaves like alive (no STOP, no auto-advance).
    - **complete-success** — auto-advances to the next trycycle phase via a backgrounded `run_phase.py` invocation, when the transition is gate-free.
    - **complete-failure / escalate** — emits a `=== STOP THE LOOP ===` banner naming the failure.
    - **hard-gate** — same banner, naming the gate the user must resolve.

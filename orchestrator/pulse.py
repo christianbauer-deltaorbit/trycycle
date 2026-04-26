@@ -354,6 +354,24 @@ def decide_action(
 
     if not lifesigns.get("should_escalate"):
         last = lifesigns.get("last_activity_seconds_ago")
+        # Distinguish "mtimes are fresh" from "mtimes are stale but the
+        # subprocess probe shows the spawned claude is still hot".
+        # Lifesigns marks the latter by populating subprocess_probe.alive.
+        # Pulse surfaces the distinction so users reading /loop history
+        # can tell the runner is hitting the buffered-output edge case
+        # vs. genuinely receiving updates.
+        probe = lifesigns.get("subprocess_probe") or {}
+        if probe.get("alive"):
+            pid = probe.get("pid")
+            return PulseAction(
+                kind="alive_subprocess_active",
+                reason=(
+                    f"{summary.phase} subprocess pid {pid} still running; "
+                    f"last artifact write {last}s ago "
+                    "(claude --output-format json buffers until completion)"
+                ),
+                diagnostics={"lifesigns": lifesigns},
+            )
         return PulseAction(
             kind="alive",
             reason=(
