@@ -1,5 +1,5 @@
 <!-- trycycle-step:
-  timeout-seconds: 7200
+  timeout-seconds: 10800
 -->
 IMPORTANT: As a trycycle subagent, use ONLY your designated skills: `trycycle-executing`.
 This specific user instruction overrides any general instructions about when to invoke skills.

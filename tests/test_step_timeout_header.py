@@ -264,23 +264,160 @@ class StepTimeoutHeaderTests(unittest.TestCase):
             self.assertEqual(seen["quick"], 60)
             self.assertEqual(seen["long"], 7200)
 
-    def test_executing_next_task_template_declares_long_timeout(self) -> None:
-        """The shipped executing/next-task and executing/finalize templates
-        declare timeout-seconds: 7200 to survive long pytest runs."""
+    def test_shipped_templates_declare_expected_per_step_timeouts(self) -> None:
+        """Each shipped subagent template under subagents/ that the
+        per-template-timeout convention applies to declares the
+        empirically-justified value documented in SKILL.md.
+
+        Updating this map deliberately requires touching the test so a
+        change in expected duration is reviewed alongside the template
+        change.
+        """
         from orchestrator.run_phase import _parse_step_header
 
-        for relative in (
-            "subagents/prompt-executing-next-task.md",
-            "subagents/prompt-executing-finalize.md",
-        ):
+        expected: dict[str, int] = {
+            # Long deterministic work — bounded by repo regression suite.
+            "subagents/prompt-executing-finalize.md": 14400,
+            # Multi-task implementation; per-invocation override pattern
+            # documented for unusual loads (e.g. --timeout-seconds 14400).
+            "subagents/prompt-executing-next-task.md": 10800,
+            # Inventory step. Anything longer = over-exploration; fail fast.
+            "subagents/prompt-planning-initial-survey.md": 600,
+            # Bounded creative work on a known scaffold.
+            "subagents/prompt-planning-initial-scaffold.md": 1800,
+            "subagents/prompt-planning-initial-detail.md": 1800,
+            "subagents/prompt-planning-initial-commit.md": 1800,
+            # Stateless review pass; should not need an hour.
+            "subagents/prompt-planning-edit.md": 1800,
+            # Single-shot reasoning over codebase. Beyond an hour usually
+            # means prompt-too-big or rambling.
+            "subagents/prompt-test-strategy.md": 3600,
+            "subagents/prompt-test-plan.md": 3600,
+            # Full diff review with structured observations output.
+            "subagents/prompt-post-impl-review.md": 3600,
+        }
+
+        for relative, value in expected.items():
             with self.subTest(template=relative):
                 text = (REPO_ROOT / relative).read_text(encoding="utf-8")
                 fields = _parse_step_header(text)
                 self.assertEqual(
                     fields.get("timeout-seconds"),
-                    7200,
-                    f"{relative} should declare timeout-seconds: 7200",
+                    value,
+                    f"{relative} should declare timeout-seconds: {value}",
                 )
+
+    def test_header_wins_over_explicit_cli_timeout_seconds(self) -> None:
+        """Precedence regression. When BOTH a template header AND --timeout-seconds
+        are passed, the header value wins. (This is the inherited behaviour from
+        commit 1987c89; the run-sequence resolver uses the header as the override
+        and the CLI flag as the default.) The same template dispatched without
+        --timeout-seconds also uses the header value.
+
+        Codifies the precedence so a future runner change cannot silently flip
+        it without this test failing first.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workdir = tmp_path / "repo"
+            workdir.mkdir()
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            _write_fake_claude(bin_dir)
+            template_dir = tmp_path / "templates"
+
+            _write_template(
+                template_dir,
+                phase="precedence",
+                step="long",
+                header="<!-- trycycle-step:\n  timeout-seconds: 1800\n-->",
+            )
+
+            base_args = [
+                "run-sequence",
+                "--phase",
+                "precedence",
+                "--steps",
+                "long",
+                "--template-dir",
+                str(template_dir),
+                "--workdir",
+                str(workdir),
+                "--backend",
+                "claude",
+                "--dry-run",
+            ]
+            env = {
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HOME": str(tmp_path),
+            }
+
+            # 1. Header alone, no --timeout-seconds: header wins (1800).
+            artifacts_a = tmp_path / "art_a"
+            result_a = self.run_sequence(
+                *base_args,
+                "--artifacts-dir",
+                str(artifacts_a),
+                env=env,
+            )
+            self.assertEqual(result_a.returncode, 0, result_a.stderr)
+            payload_a = json.loads(result_a.stdout)
+            self.assertEqual(payload_a["steps"][0]["timeout_seconds"], 1800)
+
+            # 2. Header + --timeout-seconds 600: under the current resolver
+            # (commit 1987c89), the HEADER wins, not the CLI flag. If you
+            # want CLI to win, _resolve_step_timeout_seconds must be flipped
+            # — and this test will start failing as the canary.
+            artifacts_b = tmp_path / "art_b"
+            result_b = self.run_sequence(
+                *base_args,
+                "--artifacts-dir",
+                str(artifacts_b),
+                "--timeout-seconds",
+                "600",
+                env=env,
+            )
+            self.assertEqual(result_b.returncode, 0, result_b.stderr)
+            payload_b = json.loads(result_b.stdout)
+            self.assertEqual(
+                payload_b["steps"][0]["timeout_seconds"],
+                1800,
+                "Header value 1800 should override CLI --timeout-seconds 600 "
+                "under commit 1987c89's resolver. If this fails, the precedence "
+                "has been inverted intentionally — update the documentation in "
+                "SKILL.md §5 (Sequenced phases) accordingly.",
+            )
+
+            # 3. Template without a header + --timeout-seconds 600: CLI wins.
+            _write_template(
+                template_dir,
+                phase="precedence",
+                step="bare",
+                header=None,
+            )
+            artifacts_c = tmp_path / "art_c"
+            result_c = self.run_sequence(
+                "run-sequence",
+                "--phase",
+                "precedence",
+                "--steps",
+                "bare",
+                "--template-dir",
+                str(template_dir),
+                "--workdir",
+                str(workdir),
+                "--artifacts-dir",
+                str(artifacts_c),
+                "--backend",
+                "claude",
+                "--dry-run",
+                "--timeout-seconds",
+                "600",
+                env=env,
+            )
+            self.assertEqual(result_c.returncode, 0, result_c.stderr)
+            payload_c = json.loads(result_c.stdout)
+            self.assertEqual(payload_c["steps"][0]["timeout_seconds"], 600)
 
     def test_unknown_header_keys_are_ignored_not_errored(self) -> None:
         """Forward-compatibility: unknown keys must not break parsing."""

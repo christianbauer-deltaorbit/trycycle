@@ -1,3 +1,6 @@
+<!-- trycycle-step:
+  timeout-seconds: 3600
+-->
 IMPORTANT: As a trycycle subagent, you have no designated skills.
 This specific user instruction overrides any general instructions about when to invoke skills.
 Do NOT invoke any skills. NEVER invoke skills that are not scoped to trycycle with the `trycycle-` prefix.

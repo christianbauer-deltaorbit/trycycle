@@ -62,6 +62,29 @@ Long phases — `planning-initial` and `executing` — have historically hit the
 
 For short tasks where the decomposition overhead is not warranted, pass `--single-shot <template-path>` to dispatch a single subagent against an arbitrary template instead of stepping. This preserves legacy one-shot behaviour while keeping the scratch-file machinery available.
 
+### Per-step timeouts (template headers)
+
+Each subagent template under `<skill-directory>/subagents/` may carry a header declaring the per-step wall-clock budget:
+
+```
+<!-- trycycle-step:
+  timeout-seconds: N
+-->
+```
+
+`run-sequence` reads the header before each step and uses N as the runner's `--timeout-seconds` for that dispatch. The header **wins over the CLI `--timeout-seconds`** flag (the CLI value is the fallback when no header is declared); the runner's `DEFAULT_TIMEOUT_SECONDS` / `EXECUTING_TIMEOUT_SECONDS` constants are the next fallback below that.
+
+How to choose a value:
+
+- **Deterministic / bounded work** (loading a checklist, running tests, committing): tight cap, just above the realistic wall clock. Anything longer surfaces a real problem fast. Examples: `prompt-planning-initial-survey.md` is **600 s** (10 min) because survey is bounded inventory work; `prompt-planning-edit.md` is **1800 s** (30 min) because the editor is a stateless review pass.
+- **Bounded creative work** (scaffolding a plan, filling task steps, writing the commit message): **1800 s** (30 min). Long enough for thoughtful drafting; short enough that an idle subagent fails fast.
+- **Single-shot reasoning over the codebase** (test-strategy, test-plan, post-impl-review): **3600 s** (1 h). Beyond an hour usually means the prompt is too big or the subagent is rambling.
+- **Long iterative implementation** (next-task, finalize): generous ceiling that scales with the project's test-suite size. **10800 s** (3 h) for `next-task`, **14400 s** (4 h) for `finalize`. The new lifesigns subprocess probe + stream-json output (commits `de68540`, `b2fa00b`) mean a long healthy step is correctly observed, so the ceiling no longer false-positives via pulse.
+
+When to override:
+
+- For an unusually heavy `next-task` (e.g. closing a structurally hard test), pass `--timeout-seconds 14400` on the dispatch. The CLI value fills in only when a template lacks a header — it does **not** override a header. To raise a per-template ceiling for a specific run, edit the template's header for that branch.
+
 ## Workspace path convention
 
 Throughout this skill, `{WORKTREE_PATH}` means the directory where implementation happens:
