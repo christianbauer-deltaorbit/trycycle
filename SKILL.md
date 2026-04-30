@@ -310,7 +310,23 @@ If the plan still is not judged ready after the 5th editor round: **STOP. Do NOT
 
 Now that the implementation plan has passed the plan-editor loop and is finalized, dispatch a subagent to reconcile the testing strategy against the plan and produce the concrete test plan, starting from high-value existing automated checks where they exist and adding new tests where coverage is missing.
 
-Immediately before dispatch, prepare the `test-plan` phase via the phase wrapper using template `<skill-directory>/subagents/prompt-test-plan.md`, `--set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH}`, `--set WORKTREE_PATH={WORKTREE_PATH}`, `--set-file APPROVED_TEST_STRATEGY={APPROVED_TEST_STRATEGY_PATH}`, `--transcript-placeholder USER_REQUEST_TRANSCRIPT`, and `--require-nonempty-tag approved_test_strategy`.
+Default mode (decomposed — recommended for non-trivial plans): dispatch the `test-plan` phase as a four-step sequence via
+
+```
+python3 <skill-directory>/orchestrator/run_phase.py run-sequence \
+    --phase test-plan \
+    --steps load,backend,gui,commit \
+    --set WORKTREE_PATH={WORKTREE_PATH} \
+    --set IMPLEMENTATION_PLAN_PATH={IMPLEMENTATION_PLAN_PATH} \
+    --set-file APPROVED_TEST_STRATEGY={APPROVED_TEST_STRATEGY_PATH} \
+    --transcript-placeholder USER_REQUEST_TRANSCRIPT \
+    --require-nonempty-tag approved_test_strategy \
+    <native-or-fallback args>
+```
+
+Each step has its own template under the `subagents/` directory: `<skill-directory>/subagents/prompt-test-plan-load.md`, `<skill-directory>/subagents/prompt-test-plan-backend.md`, `<skill-directory>/subagents/prompt-test-plan-gui.md`, and `<skill-directory>/subagents/prompt-test-plan-commit.md`. `load` writes a structured inventory to phase-state (with a deterministic test-plan path); `backend` drafts non-GUI test cases (logic / internals / APIs / CLI / HTTP); `gui` drafts visual / browser tests if any apply (no-op when the project has no GUI); `commit` polishes, prepends any strategy-changes section, writes the coverage summary, and emits the legacy `## Test plan path / ## Commit / ## Changed files` report (and `## Strategy changes requiring user approval` only if applicable).
+
+Single-shot mode (for very simple plans where the decomposition overhead is not warranted): add `--single-shot <skill-directory>/subagents/prompt-test-plan.md` to the `run-sequence` call. That dispatches the legacy single prompt and still enforces the heartbeat check.
 
 Monitor by checking every 5 minutes until 60 minutes have passed. Then, and only then, kill it and retry.
 
