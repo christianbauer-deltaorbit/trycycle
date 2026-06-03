@@ -1,35 +1,10 @@
 {
   "id": "plan-review-loop",
-  "label": "Planning issue review",
-  "description": "A scenario focused on the fresh planning issue finder that reviews a completed implementation plan without editing it.",
-  "selected_gate_id": "planning-issue-review-and-synthesis-loop",
-  "selected_outcome_id": "issues-synthesized",
-  "selected_prompt_source_id": "planning-issue-review-and-synthesis-loop::subagent-template::prompt-planning-review",
+  "label": "Plan review loop",
+  "description": "A scenario focused on the plan-editor loop and path selection through repeated plan improvement.",
+  "selected_gate_id": "plan-editor-loop",
+  "selected_outcome_id": "made-excellent",
   "bindings": {
-    "INITIAL_REQUEST_AND_SUBSEQUENT_CONVERSATION": [
-      {
-        "role": "user",
-        "text": "Use trycycle to build a static explorer that makes prompt gaps obvious."
-      },
-      {
-        "role": "assistant",
-        "text": "The strategy proposes a Python-first static site builder plus Playwright-based integration coverage of the rendered UI."
-      },
-      {
-        "role": "user",
-        "text": "Approved. Keep the sidecar simple."
-      }
-    ],
-    "USER_REQUEST_TRANSCRIPT": [
-      {
-        "role": "user",
-        "text": "Use trycycle to build a static explorer that makes prompt gaps obvious."
-      },
-      {
-        "role": "user",
-        "text": "Keep the sidecar simple and derive as much as possible from SKILL.md and prompt templates."
-      }
-    ],
     "FULL_CONVERSATION_VERBATIM": [
       {
         "role": "user",
@@ -44,8 +19,9 @@
         "text": "approved"
       }
     ],
+    "USER_INTENT": "# User Intent\n\n## Verbatim Relevant Spans, Oldest First\n\n### Span 1\nSource: user\nReason: request\n\n````text\nUse trycycle to build a static explorer that makes prompt gaps obvious.\n````\n\n### Span 2\nSource: assistant\nReason: supported-assistant-proposal\n\n````text\nTesting strategy recommends high-confidence integration coverage of user-visible behavior at each UI step.\n````\n\n### Span 3\nSource: user\nReason: approval\n\n````text\napproved\n````\n\n### Span 4\nSource: user\nReason: constraint\n\n````text\nKeep the sidecar simple and derive as much as possible from SKILL.md and prompt templates.\n````\n\n## User Intent Updates, Oldest First\n",
+    "TESTING_STRATEGY": "## Testing Strategy\n\nUse high-confidence integration coverage of user-visible behavior at each UI step, with browser-rendered artifacts for prompt visibility and flow-map correctness.\n\n## Approval\n\nThe user must accept this strategy or provide edits before implementation or workspace setup begins.",
     "POST_IMPLEMENTATION_REVIEW_OBSERVATIONS_JSON": "",
-    "PLANNING_FINDINGS_MEMO": "## Issue 1\nFinding: The plan does not state the source of truth for gate ordering.\nEvidence:\n- The user asked to derive as much as possible from SKILL.md and prompt templates.\n- A static sidecar order could drift when SKILL.md changes.\n\n## Issue 2\nFinding: The plan does not prove that every planning subprompt is visible in the explorer.\nEvidence:\n- The planning loop now has separate issue-finder, deepening, synthesis, and nonconvergence prompts.\n- A single default prompt tab would hide regressions in the non-default prompt sources.",
     "WORKTREE_PATH": "/home/user/code/trycycle/.worktrees/feat-trycycle-explorer",
     "IMPLEMENTATION_PLAN_PATH": "/home/user/code/trycycle/.worktrees/feat-trycycle-explorer/docs/plans/2026-03-10-trycycle-explorer.md",
     "TEST_PLAN_PATH": "/home/user/code/trycycle/.worktrees/feat-trycycle-explorer/docs/plans/2026-03-10-trycycle-explorer-test-plan.md"

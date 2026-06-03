@@ -18,15 +18,7 @@ import uuid
 
 
 DEFAULT_TIMEOUT_SECONDS = 60 * 60
-LONG_RUNNING_AGENT_TIMEOUT_SECONDS = 3 * 60 * 60
-LONG_RUNNING_AGENT_PHASES = {
-    "executing",
-    "planning-review",
-    "planning-review-deepen",
-    "planning-synthesis",
-    "post-implementation-review",
-    "post-implementation-review-deepen",
-}
+EXECUTING_TIMEOUT_SECONDS = 3 * 60 * 60
 CODEX_HOME_ENV = "CODEX_HOME"
 DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 KIMI_SHARE_DIR_ENV = "KIMI_SHARE_DIR"
@@ -94,8 +86,8 @@ def _read_nonempty_env(name: str) -> str | None:
 
 
 def _default_timeout_seconds_for_phase(phase: str) -> int:
-    if phase in LONG_RUNNING_AGENT_PHASES:
-        return LONG_RUNNING_AGENT_TIMEOUT_SECONDS
+    if phase == "executing":
+        return EXECUTING_TIMEOUT_SECONDS
     return DEFAULT_TIMEOUT_SECONDS
 
 

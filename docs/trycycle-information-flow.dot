@@ -39,7 +39,7 @@ digraph trycycle_information_flow {
 
     user_request [label="User request"];
     repo_state [label="Repository state\n(files, git history, worktree status)"];
-    transcript_source [label="Session transcript source\n(Codex CLI or Claude Code)"];
+    transcript_source [label="Session transcript source\n(Codex CLI, Claude Code,\nKimi CLI, or OpenCode)"];
     version_tags [label="Version tags\n(local repo + origin/main)"];
   }
 
@@ -60,6 +60,12 @@ digraph trycycle_information_flow {
     prompt_templates [label="Prompt templates\n(subagents/*.md)"];
     prompt_builder [label="Prompt builder\n(orchestrator/prompt_builder)"];
     worktree_manager [label="Worktree manager\n(subskills/trycycle-worktrees)"];
+    user_intent_extractor [label="User-intent extraction\nsubagent"];
+    user_intent_artifact [
+      label="User intent artifact\n(verbatim relevance extract\n+ append-only updates)",
+      shape=note,
+      fillcolor="#ffffff"
+    ];
   }
 
   subgraph cluster_planning {
@@ -69,21 +75,18 @@ digraph trycycle_information_flow {
     style="rounded,filled";
 
     planner [label="Planning subagent\n(subskills/trycycle-planning)"];
+    test_strategy [label="Testing-strategy subagent"];
+    testing_strategy_artifact [
+      label="Testing strategy artifact\n(exact approved strategy)",
+      shape=note,
+      fillcolor="#ffffff"
+    ];
     implementation_plan [
       label="Implementation plan\n(plan + test plan)",
       shape=note,
       fillcolor="#ffffff"
     ];
-    plan_reviewer [label="Fresh planning\nissue finder"];
-    planning_deepening [
-      label="Same planning issue finder\nsame-agent deepening\n(up to 5 ISSUES)"
-    ];
-    planning_findings [
-      label="Accumulated findings memo\n(issue + evidence)",
-      shape=note,
-      fillcolor="#ffffff"
-    ];
-    plan_synthesizer [label="Fresh planning\nsynthesizer"];
+    plan_reviewer [label="Fresh plan reviewer"];
   }
 
   subgraph cluster_execution {
@@ -99,14 +102,6 @@ digraph trycycle_information_flow {
       fillcolor="#ffffff"
     ];
     post_review [label="Fresh code reviewer"];
-    post_review_deepening [
-      label="Same code reviewer\nsame-agent deepening\n(5 blocking cap = halt)"
-    ];
-    review_round_observations [
-      label="Combined review-round observations\n(normal + deepening)",
-      shape=note,
-      fillcolor="#ffffff"
-    ];
   }
 
   subgraph cluster_finish {
@@ -137,48 +132,28 @@ digraph trycycle_information_flow {
   version_tags -> check_update [label="compare"];
   check_update -> orchestrator [label="update status"];
   transcript_source -> transcript_builder [label="raw session data"];
-  transcript_builder -> orchestrator [label="recent conversation"];
 
   orchestrator -> worktree_manager [label="create isolated branch"];
   repo_state -> worktree_manager [label="shared git history"];
   orchestrator -> prompt_builder [label="bind runtime values"];
   prompt_templates -> prompt_builder [label="template text"];
-  transcript_builder -> prompt_builder [label="transcript excerpt"];
+  transcript_builder -> prompt_builder [label="raw transcript\n(user-intent only)"];
   worktree_manager -> prompt_builder [label="worktree path"];
+  prompt_builder -> user_intent_extractor [label="user-intent\nextraction prompt"];
+  user_intent_extractor -> user_intent_artifact [label="writes initial artifact"];
+  orchestrator -> user_intent_artifact [label="append user updates"];
+  user_intent_artifact -> prompt_builder [label="USER_INTENT binding"];
+  prompt_builder -> test_strategy [label="testing-strategy prompt"];
+  test_strategy -> testing_strategy_artifact [label="writes proposed strategy"];
+  testing_strategy_artifact -> prompt_builder [label="TESTING_STRATEGY binding"];
 
   prompt_builder -> planner [label="planning prompt"];
   worktree_manager -> planner [label="isolated repo view"];
   planner -> implementation_plan [label="proposed plan"];
   implementation_plan -> plan_reviewer [label="review input"];
-  prompt_builder -> plan_reviewer [label="issue-review prompt"];
-  plan_reviewer -> planning_deepening [
-    label="ISSUES;\nkeep same agent",
-    style=dashed,
-    color="#d97706",
-    fontcolor="#b45309"
-  ];
-  prompt_builder -> planning_deepening [label="deepening prompt"];
-  planning_deepening -> planning_findings [
-    label="additional ISSUES or READY;\n5-cap still synthesizes",
-    style=dashed,
-    color="#d97706",
-    fontcolor="#b45309"
-  ];
-  plan_reviewer -> implementation_plan [
-    label="READY => finalized plan",
-    color="#166534",
-    fontcolor="#166534"
-  ];
-  planning_findings -> plan_synthesizer [label="evidence memo"];
-  implementation_plan -> plan_synthesizer [label="current plan"];
-  prompt_builder -> plan_synthesizer [label="synthesis prompt"];
-  plan_synthesizer -> implementation_plan [
-    label="holistic rewrite",
-    color="#166534",
-    fontcolor="#166534"
-  ];
-  plan_synthesizer -> plan_reviewer [
-    label="fresh verification\n(up to 5)",
+  prompt_builder -> plan_reviewer [label="review prompt"];
+  plan_reviewer -> planner [
+    label="critical/major findings\n(fresh round, up to 5)",
     style=dashed,
     color="#d97706",
     fontcolor="#b45309"
@@ -190,28 +165,12 @@ digraph trycycle_information_flow {
   executor -> code_artifacts [label="commits + test results"];
   code_artifacts -> post_review [label="review input"];
   prompt_builder -> post_review [label="review prompt"];
-  post_review -> post_review_deepening [
-    label="blocking issues;\nkeep same reviewer",
-    style=dashed,
-    color="#d97706",
-    fontcolor="#b45309"
-  ];
-  prompt_builder -> post_review_deepening [label="deepening prompt"];
-  post_review -> review_round_observations [
-    label="normal review observations"
-  ];
-  post_review_deepening -> review_round_observations [
-    label="extract + combine",
-    style=dashed,
-    color="#d97706",
-    fontcolor="#b45309"
-  ];
   plan_reconsider [
     label="Plan reconsideration\n(rounds 4, 6, 8... + stop)",
     fillcolor="#ffffff"
   ];
   prompt_builder -> plan_reconsider [label="reconsider prompt"];
-  review_round_observations -> plan_reconsider [
+  post_review -> plan_reconsider [
     label="blocking findings persist",
     style=dashed,
     color="#d97706",
@@ -223,14 +182,14 @@ digraph trycycle_information_flow {
     color="#d97706",
     fontcolor="#b45309"
   ];
-  review_round_observations -> executor [
+  post_review -> executor [
     label="critical/major findings\n(fix round, up to 8)",
     style=dashed,
     color="#d97706",
     fontcolor="#b45309"
   ];
 
-  review_round_observations -> finisher [label="blocking_issue_count = 0"];
+  post_review -> finisher [label="no critical/major issues"];
   finisher -> run_summary [label="collect final facts"];
   run_summary -> integration [label="present choices"];
 }

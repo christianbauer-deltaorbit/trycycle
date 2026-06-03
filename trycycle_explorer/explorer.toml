@@ -1,6 +1,6 @@
 [display]
 title = "Trycycle Explorer"
-subtitle = "Inspect gate prompts, bindings, reviewer/deepening loops, and outcomes from the real trycycle repo."
+subtitle = "Inspect gate prompts, bindings, and loop outcomes from the real trycycle repo."
 
 [[groups]]
 id = "session-setup"
@@ -8,6 +8,7 @@ label = "Session setup"
 gates = [
   "version-check",
   "ask-about-critical-unknowns-before-work",
+  "prepare-user-intent",
   "testing-strategy",
   "prepare-implementation-workspace",
   "workspace-hygiene-gate",
@@ -18,7 +19,7 @@ id = "planning-loop"
 label = "Planning loop"
 gates = [
   "plan-with-trycycle-planning",
-  "planning-issue-review-and-synthesis-loop",
+  "plan-editor-loop",
   "build-test-plan",
 ]
 
@@ -27,7 +28,7 @@ id = "implementation-loop"
 label = "Implementation loop"
 gates = [
   "execute-with-trycycle-executing",
-  "post-implementation-review-loop",
+  "acceptance-artifact-and-post-implementation-review-loop",
 ]
 
 [[groups]]
@@ -35,21 +36,21 @@ id = "finish"
 label = "Finish"
 gates = ["finish"]
 
-[bindings.INITIAL_REQUEST_AND_SUBSEQUENT_CONVERSATION]
-label = "Conversation context JSON"
-help = "Transcript JSON used for the testing-strategy prompt."
-widget = "textarea"
-source_category = "user-input"
-
-[bindings.USER_REQUEST_TRANSCRIPT]
-label = "Task input transcript JSON"
-help = "Transcript JSON injected into planning prompts."
-widget = "textarea"
-source_category = "user-input"
-
 [bindings.FULL_CONVERSATION_VERBATIM]
 label = "Full conversation JSON"
-help = "Transcript JSON used when building the test plan and reconsidering plans after review-loop blockers."
+help = "Raw transcript JSON used only by the user-intent extraction phase."
+widget = "textarea"
+source_category = "user-input"
+
+[bindings.USER_INTENT]
+label = "User intent extract"
+help = "Append-only verbatim relevance extract plus conductor-owned chronological updates."
+widget = "textarea"
+source_category = "user-input"
+
+[bindings.TESTING_STRATEGY]
+label = "Testing strategy"
+help = "Exact testing strategy returned by the test-strategy subagent and approved by the user."
 widget = "textarea"
 source_category = "user-input"
 
@@ -59,93 +60,29 @@ help = "Structured review observations fed back into the execution loop."
 widget = "textarea"
 source_category = "user-input"
 
+[bindings.ACCEPTANCE_ARTIFACT_REVIEW_OBSERVATIONS_JSON]
+label = "Acceptance-artifact review observations JSON"
+help = "Structured acceptance-artifact gaps fed back into the execution loop."
+widget = "textarea"
+source_category = "user-input"
+
 [bindings.LATEST_IMPLEMENTATION_REPORT]
 label = "Latest implementation report"
-help = "Most recent implementation report supplied to the post-implementation reviewer as claims to verify."
+help = "Most recent implementation report supplied to acceptance-artifact and code reviewers as claims to verify."
 widget = "textarea"
 source_category = "user-input"
 
 [bindings.REVIEW_ROUND_NUMBER]
-label = "Review round number"
-help = "The completed post-implementation review round that triggered plan reconsideration."
+label = "Verification round number"
+help = "The completed acceptance-artifact or post-implementation review round that triggered plan reconsideration."
 widget = "text"
 source_category = "derived-path"
 
 [bindings.REVIEW_LOOP_HISTORY]
 label = "Review loop history"
-help = "Accumulated raw review and fix-round evidence passed to plan reconsideration."
+help = "Accumulated raw acceptance-artifact review, code-review, and fix-round evidence passed to plan reconsideration."
 widget = "textarea"
 source_category = "user-input"
-
-[bindings.PLANNING_FINDINGS_MEMO]
-label = "Planning findings memo"
-help = "Accumulated issue/evidence memo from the planning issue finder and its same-agent deepening passes, passed to the fresh planning synthesizer."
-widget = "textarea"
-source_category = "derived-path"
-
-[prompt_labels]
-"subagents/prompt-planning-review.md" = "Planning issue finder"
-"subagents/prompt-planning-review-deepen.md" = "Planning issue-finder deepening"
-"subagents/prompt-planning-synthesis.md" = "Planning synthesis"
-"subagents/prompt-post-impl-review.md" = "Fresh code reviewer"
-"subagents/prompt-post-impl-review-deepen.md" = "Same-reviewer deepening"
-"subagents/prompt-planning-reconsider.md" = "Post-review plan reconsideration"
-"subagents/prompt-executing.md" = "Implementation or fix execution"
-"subagents/prompt-nonconvergence-review.md" = "Nonconvergence review"
-
-[gate_details."planning-issue-review-and-synthesis-loop"]
-title = "Planning review cycle"
-
-[[gate_details."planning-issue-review-and-synthesis-loop".items]]
-label = "1. Fresh issue finder"
-body = "A fresh planning subagent reviews the current implementation plan against the user's request and repo context. It reports ISSUES or READY and must not edit the plan."
-prompt_source_path = "subagents/prompt-planning-review.md"
-
-[[gate_details."planning-issue-review-and-synthesis-loop".items]]
-label = "2. Same-agent deepening"
-body = "If the issue finder reports ISSUES, the conductor keeps that same active subagent open and asks for additional critical plan issues. READY here means no additional issues in that deepening pass."
-prompt_source_path = "subagents/prompt-planning-review-deepen.md"
-
-[[gate_details."planning-issue-review-and-synthesis-loop".items]]
-label = "3. Findings memo"
-body = "The conductor accumulates the issue-review and deepening reports into a simple issue/evidence memo. The 5 ISSUES deepening cap stops discovery and continues to synthesis; it is not a halt."
-
-[[gate_details."planning-issue-review-and-synthesis-loop".items]]
-label = "4. Fresh synthesis"
-body = "A fresh planning subagent receives the current plan plus the findings memo and rewrites the plan holistically. Synthesis is separate from issue discovery and does not run in the same subagent."
-prompt_source_path = "subagents/prompt-planning-synthesis.md"
-
-[[gate_details."planning-issue-review-and-synthesis-loop".items]]
-label = "5. Fresh verification loop"
-body = "After synthesis, the conductor starts another fresh issue-review round. READY proceeds to the test-plan phase. Five review rounds without READY goes to nonconvergence review."
-prompt_source_path = "subagents/prompt-nonconvergence-review.md"
-
-[gate_details."post-implementation-review-loop"]
-title = "Post-implementation review cycle"
-
-[[gate_details."post-implementation-review-loop".items]]
-label = "1. Fresh code reviewer"
-body = "A fresh reviewer gets the finalized implementation plan, finalized test plan, workspace, and latest implementation report. No blocking observations means the run can finish."
-prompt_source_path = "subagents/prompt-post-impl-review.md"
-
-[[gate_details."post-implementation-review-loop".items]]
-label = "2. Same-reviewer deepening"
-body = "If the reviewer reports critical or major issues, the conductor keeps that same reviewer open and asks for additional non-duplicate blocking observations before deciding the fix input."
-prompt_source_path = "subagents/prompt-post-impl-review-deepen.md"
-
-[[gate_details."post-implementation-review-loop".items]]
-label = "3. Combined observations"
-body = "Every normal and deepening response is saved, extracted, and combined into one review-round observations artifact. A 5th blocking deepening pass halts for user inspection instead of dispatching fixes."
-
-[[gate_details."post-implementation-review-loop".items]]
-label = "4. Plan reconsideration"
-body = "When blockers remain at rounds 4, 6, 8, and the stop point, a fresh planning subagent decides whether implementation revealed a plan or test-plan gap."
-prompt_source_path = "subagents/prompt-planning-reconsider.md"
-
-[[gate_details."post-implementation-review-loop".items]]
-label = "5. Fix execution or stop"
-body = "If blockers remain before the stop point, the same persistent implementation subagent resumes with the combined critical/major observations. At the stop point, nonconvergence review runs instead."
-prompt_source_path = "subagents/prompt-executing.md"
 
 [bindings.WORKTREE_PATH]
 label = "Workspace path"
@@ -202,33 +139,13 @@ path = "trycycle_explorer/samples/simple-feature.json"
 
 [[sample_inputs]]
 id = "plan-review-loop"
-label = "Planning issue review"
+label = "Plan review loop"
 path = "trycycle_explorer/samples/plan-review-loop.json"
 
 [[sample_inputs]]
-id = "planning-review-deepening"
-label = "Planning deepening"
-path = "trycycle_explorer/samples/planning-review-deepening.json"
-
-[[sample_inputs]]
-id = "planning-synthesis"
-label = "Planning synthesis"
-path = "trycycle_explorer/samples/planning-synthesis.json"
-
-[[sample_inputs]]
 id = "post-review-fix"
-label = "Post-review fix prompt"
+label = "Post-review fix loop"
 path = "trycycle_explorer/samples/post-review-fix.json"
-
-[[sample_inputs]]
-id = "post-review-deepening"
-label = "Post-review deepening"
-path = "trycycle_explorer/samples/post-review-deepening.json"
-
-[[sample_inputs]]
-id = "post-review-reconsideration"
-label = "Plan reconsideration"
-path = "trycycle_explorer/samples/post-review-reconsideration.json"
 
 [[sample_inputs]]
 id = "no-worktree-conductor"
@@ -245,7 +162,7 @@ to = "ask-about-critical-unknowns-before-work"
 from = "ask-about-critical-unknowns-before-work"
 id = "questions-answered"
 label = "Critical unknowns resolved"
-to = "testing-strategy"
+to = "prepare-user-intent"
 
 [[outcomes]]
 from = "testing-strategy"
@@ -257,6 +174,12 @@ to = "prepare-implementation-workspace"
 from = "testing-strategy"
 id = "revise-strategy"
 label = "Revise strategy"
+to = "testing-strategy"
+
+[[outcomes]]
+from = "prepare-user-intent"
+id = "user-intent-ready"
+label = "User intent ready"
 to = "testing-strategy"
 
 [[outcomes]]
@@ -275,7 +198,7 @@ to = "plan-with-trycycle-planning"
 from = "plan-with-trycycle-planning"
 id = "plan-created"
 label = "Plan created"
-to = "planning-issue-review-and-synthesis-loop"
+to = "plan-editor-loop"
 
 [[outcomes]]
 from = "plan-with-trycycle-planning"
@@ -284,21 +207,21 @@ label = "User decision required"
 to = "plan-with-trycycle-planning"
 
 [[outcomes]]
-from = "planning-issue-review-and-synthesis-loop"
-id = "ready"
-label = "Fresh issue review returned READY"
+from = "plan-editor-loop"
+id = "already-excellent"
+label = "Already excellent"
 to = "build-test-plan"
 
 [[outcomes]]
-from = "planning-issue-review-and-synthesis-loop"
-id = "issues-synthesized"
-label = "Issues found, deepened, synthesized"
-to = "planning-issue-review-and-synthesis-loop"
+from = "plan-editor-loop"
+id = "made-excellent"
+label = "Made excellent and loop"
+to = "plan-editor-loop"
 
 [[outcomes]]
-from = "planning-issue-review-and-synthesis-loop"
+from = "plan-editor-loop"
 id = "not-converging"
-label = "5 review rounds without READY"
+label = "Not converging"
 to = "finish"
 
 [[outcomes]]
@@ -317,7 +240,7 @@ to = "build-test-plan"
 from = "execute-with-trycycle-executing"
 id = "implementation-complete"
 label = "Implementation complete"
-to = "post-implementation-review-loop"
+to = "acceptance-artifact-and-post-implementation-review-loop"
 
 [[outcomes]]
 from = "execute-with-trycycle-executing"
@@ -326,21 +249,21 @@ label = "Blocked"
 to = "finish"
 
 [[outcomes]]
-from = "post-implementation-review-loop"
+from = "acceptance-artifact-and-post-implementation-review-loop"
 id = "fix-round"
-label = "Blocking issues after review/deepening"
+label = "Acceptance or code-review fix needed"
 to = "execute-with-trycycle-executing"
 
 [[outcomes]]
-from = "post-implementation-review-loop"
+from = "acceptance-artifact-and-post-implementation-review-loop"
 id = "approved"
-label = "No blocking review observations"
+label = "No blocking acceptance or code-review observations"
 to = "finish"
 
 [[outcomes]]
-from = "post-implementation-review-loop"
+from = "acceptance-artifact-and-post-implementation-review-loop"
 id = "not-converging"
-label = "Stop point reached with blockers"
+label = "Verification loop exhausted"
 to = "finish"
 
 [[outcomes]]

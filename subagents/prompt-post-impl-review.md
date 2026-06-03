@@ -12,11 +12,17 @@ The latest implementation report is included below. Do not defer to it. Treat it
 </latest_implementation_report>
 {{/if}}
 
+<user_intent>
+{USER_INTENT}
+</user_intent>
+
 Context gathering:
 - Read the finalized implementation plan and finalized test plan before reviewing code.
+- Use `<user_intent>` as the scope boundary for intended behavior. Findings are blocking only when they are necessary to satisfy this user intent, the finalized plans, or regressions introduced by this work.
 - Read relevant files and repository context as needed.
 - Use read-only git inspection commands if helpful.
 - Do not modify files.
+- Do not rerun or recreate acceptance-artifact checks. A separate blank-slate acceptance-artifact reviewer has already inspected the produced artifacts before this code-review phase. Your review may inspect code, tests, and automated test results, but it must not launch the app or regenerate artifacts just to repeat that acceptance check.
 
 Failure investigation:
 - Treat each failure as a clue about the system, not just a result to transcribe. Investigate enough to characterize the shape of the failure before classifying it.
@@ -61,7 +67,7 @@ Schema:
     {
       "id": "R1",
       "severity": "critical" | "major" | "minor" | "nit",
-      "category": "implementation_plan_mismatch" | "test_plan_mismatch" | "correctness" | "edge_case" | "security" | "performance" | "error_handling" | "missing_test" | "behavior" | "other",
+      "category": "acceptance_gap" | "artifact_gap" | "implementation_plan_mismatch" | "test_plan_mismatch" | "correctness" | "edge_case" | "security" | "performance" | "error_handling" | "missing_test" | "behavior" | "other",
       "expected": "what should have happened",
       "observed": "what actually happened",
       "where": {
