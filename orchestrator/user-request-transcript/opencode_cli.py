@@ -20,23 +20,43 @@ _last_resolved_db_path: Path | None = None
 
 
 def _resolve_db_path(search_root: Path | None) -> Path:
+    checked_paths: list[Path] = []
+
     if search_root is not None:
         db_path = search_root / "opencode.db"
+        checked_paths.append(db_path)
         if db_path.exists():
             return db_path
-        raise TranscriptError(f"OpenCode database not found at {db_path}")
 
     data_dir = os.environ.get(OPENCODE_DATA_DIR_ENV)
     if data_dir:
         db_path = Path(data_dir) / "opencode.db"
+        checked_paths.append(db_path)
         if db_path.exists():
             return db_path
 
+    checked_paths.append(DEFAULT_DB_PATH)
     if DEFAULT_DB_PATH.exists():
         return DEFAULT_DB_PATH
 
+    checked = ", ".join(str(path) for path in checked_paths)
+    if search_root is not None:
+        fallback_checked = ", ".join(str(path) for path in checked_paths[1:])
+        fallback_clause = (
+            f" It also checked {fallback_checked}."
+            if fallback_checked
+            else ""
+        )
+        raise TranscriptError(
+            "OpenCode database not found. "
+            f"--search-root was set to {search_root}, so trycycle first checked "
+            f"{search_root / 'opencode.db'}.{fallback_clause} "
+            f"Remove --search-root, set {OPENCODE_DATA_DIR_ENV}, or pass a directory "
+            "that contains opencode.db."
+        )
+
     raise TranscriptError(
-        f"OpenCode database not found at {DEFAULT_DB_PATH}. "
+        f"OpenCode database not found. Checked {checked}. "
         f"Set {OPENCODE_DATA_DIR_ENV} or pass --search-root."
     )
 

@@ -44,6 +44,7 @@ When a step below tells you to prepare or dispatch a phase:
 - Pass multiline values such as reviewer outputs with `--set-file NAME=PATH`.
 - When a multiline placeholder comes from command or subagent stdout, save it to a temp file immediately before wrapper invocation so you can bind it with `--set-file`.
 - Bind transcript placeholders with `--transcript-placeholder NAME`. Only the user-intent extraction phase should receive raw conversation transcript; later phases should receive `{USER_INTENT}` and explicit artifacts instead.
+- If live transcript lookup fails but you have an existing transcript file, bind that transcript with `--transcript-file NAME=PATH` instead of `--transcript-placeholder NAME`. Do not combine transcript binding flags or `--set`/`--set-file` for the same placeholder.
 - Use `--require-nonempty-tag TAG` when a prompt requires a tagged block to contain real content after trimming whitespace.
 - Use `--ignore-tag-for-placeholders TAG` when placeholder-like text may legitimately appear inside that tag.
 - If your environment has no native subagent support and the wrapper's fallback run does not function, escalate to the user.
@@ -66,6 +67,7 @@ When a phase wrapper call needs `{FULL_CONVERSATION_VERBATIM}`:
 3. If the wrapper reports that a canary is required, run `python3 <skill-directory>/orchestrator/user-request-transcript/mark_with_canary.py` as a separate top-level command, capture stdout exactly as `{CANARY}`, then rerun the wrapper with `--canary "{CANARY}"`. For Kimi-hosted runs, keep `--transcript-cli kimi-cli` on the rerun as well.
 4. For Claude Code, always run `python3 <skill-directory>/orchestrator/user-request-transcript/mark_with_canary.py` as a separate top-level command first, capture stdout exactly as `{CANARY}`, then invoke the wrapper with `--transcript-cli claude-code --canary "{CANARY}"`.
 5. For OpenCode, always run `python3 <skill-directory>/orchestrator/user-request-transcript/mark_with_canary.py` as a separate top-level command first, capture stdout exactly as `{CANARY}`, then invoke the wrapper with `--transcript-cli opencode --canary "{CANARY}"`.
+6. If live lookup still fails and the current user request can be reconstructed from visible context, write that transcript to a temp file and rerun the wrapper with `--transcript-file NAME=<temp-file>` for the needed transcript placeholder. Use this only as a fallback, and bind each placeholder exactly once.
 
 The canary must be emitted by a separate top-level command so it reaches the live session transcript before lookup. Do not rely on shell-specific capture or assignment forms that may keep the canary out of visible command output; shells and host wrappers vary, and if the canary is not visibly emitted into the session transcript, lookup will fail. Build transcript placeholder values immediately before each phase wrapper call that uses them.
 Kimi and OpenCode support is explicit here because `host` and `auto` cannot reliably detect a Kimi host, and OpenCode requires canary-based lookup.
